@@ -1,0 +1,12 @@
+condition_sample_size: 1000
+dnn_sample_size: 10000
+flow_constraint_sample_size: 10000
+flow_sample_size: 10000
+index_1: 0
+index_2: 1
+input_dim: 2
+meta_dim: 0
+noise_strength: 0.01
+output_dim: 1
+x_max: 3
+x_min: 0
