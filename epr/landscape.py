@@ -586,9 +586,9 @@ class EnergyLandscape:
         # This requires that _prepare has been called and pdf is accessible
         if hasattr(self.dnn_dataset, 'pdf') and self.dnn_dataset is not None:
             # Interpolate or match pdf values to the current x points
-            pdf_values = self.dnn_dataset.pdf_norm # This is a simplified access, might need interpolation
+            dnn_pdf = self.dnn_dataset.pdf_norm # This is a simplified access, might need interpolation
             # For proper implementation, we might need to interpolate pdf at points x
-            mean_pdf = (flow_pdf + pdf_values[:u.shape[0]]) / 2.0
+            mean_pdf = (flow_pdf + dnn_pdf[:flow_pdf.shape[0]]) / 2.0
             return mean_pdf # Simple truncation for shape matching and calculate average
         else:
             raise ValueError("PDF values not available. Make sure _prepare has been called.")
