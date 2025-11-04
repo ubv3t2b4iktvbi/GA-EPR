@@ -2,7 +2,7 @@ import os
 import numpy as np
 from utils import ModelArgs, Problem, set_seed_everywhere
 from network import NetworkWrapper
-from landscape import EnergyLandscape
+from landscape import EnergyLandscape, compute_mse
 from dynamics import get_force_
 
 def main(config_path=None):
@@ -74,13 +74,22 @@ def main(config_path=None):
 
     # Initialize energy landscape trainer
     landscape = EnergyLandscape(args, problem, network, force_fn)
-    
+        # Compare all forward KL divergence methods
+    print("Comparing all forward KL divergence computation methods...")
+    # Generate some sample data for KL divergence comparison
+    if hasattr(landscape, 'base_dataset') and landscape.base_dataset.simulation_data is not None:
+        sample_data = landscape.base_dataset.simulation_data[:1000]  # Use first 1000 samples
+        kl_results = landscape.compare_all_forward_kld(sample_data)
+    else:
+        print("Warning: No simulation data available for KL divergence comparison")
+    landscape.model_mse_result(landscape.base_dataset.simulation_data)#data怎么写？
+
+
     # Start training
     print("Starting training...")
     landscape.train()
     print("Training complete.")
-    
-    # Generate final visualization
+ 
     print("Generating final visualizations...")
     landscape._visualize(args.num_epochs)
     print(f"Results saved to {args.prefix}")

@@ -84,9 +84,20 @@ class DNN(nn.Module):
         return out
     
     def forward_kld(self, x):
-        """Compute KL divergence loss (scaled by noise strength)"""
+        """Compute KL divergence loss (scaled by noise strength)
+        
+        Note: This computes -E_p[log q(x)] where q is related to the DNN output.
+        The actual value can be positive or negative depending on:
+        1. The scale of the DNN outputs (before scaling by noise_strength)
+        2. The noise_strength parameter
+        3. The distribution of input samples x
+        
+        This is NOT a complete KL divergence calculation. A full KL divergence
+        would be E_p[log p(x) - log q(x)] where the first term (entropy of p) is missing.
+        """
         x = self._process_input(x)
         out = self.forward(x) / -self.problem.noise_strength
+        # Return -E_p[log q(x)] which can be positive or negative
         return -torch.mean(out)
 
 
@@ -132,8 +143,7 @@ class FlowNet(nn.Module):
     
     def forward(self, x):
         """Forward pass: compute negative log likelihood scaled by noise"""
-        x = self._process_input(x)
-            
+        x = self._process_input(x)   
         u = self.flow_model.log_prob(x)
         return -self.problem.noise_strength * u
     

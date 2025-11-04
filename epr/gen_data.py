@@ -463,6 +463,8 @@ class DNNDataset(Dataset):
                 self.x = self.base._uniform_sample((self.sample_size, 
                                                 self.base.problem.input_dim))
                 self.pdf = torch.exp(self.base.mix.log_prob(self.x))
+                # Normalize the PDF values so they sum to 1
+                self.pdf_norm = self.pdf / torch.sum(self.pdf) * self.sample_size
 
                 # Calculate force values
                 self.f = self.base.force(self.x)

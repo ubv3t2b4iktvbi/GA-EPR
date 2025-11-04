@@ -489,7 +489,14 @@ class EnergyLandscape:
         torch.nn.utils.clip_grad_norm_(self.network.flow.parameters(), 5.0)
         self.flow_optim.step()
         nf.utils.update_lipschitz(self.network.flow, 50)
-        return loss.item()
+        
+        # Save loss value
+        loss_value = loss.item()
+        if not hasattr(self, 'flow_mle_losses'):
+            self.flow_mle_losses = []
+        self.flow_mle_losses.append(loss_value)
+        
+        return loss_value
 
     def _train_flow_constraint_step(self, batch):
         """Single Flow constraint training step"""
@@ -501,13 +508,16 @@ class EnergyLandscape:
         # Forward pass
         pred = self.network.flow(x)
         loss = torch.mean(pred - target)
+        mse = torch.mean((pred - target) ** 2)
         
         # Backpropagation
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.network.flow.parameters(), 5.0)
         self.flow_optim.step()
         
-        return loss.item()
+        return loss.item(), mse.item()
+    
+    
 
     def _validate(self):
         """Validation step implementation"""
@@ -569,6 +579,164 @@ class EnergyLandscape:
             
         return loss_terms.mean()
 
+    def compute_pdf_mean(self, x):
+
+        flow_pdf = torch.exp(self.network.flow.forward(x) / -self.problem.noise_strength)
+        # Get pdf values - assuming they are stored in the base dataset
+        # This requires that _prepare has been called and pdf is accessible
+        if hasattr(self.dnn_dataset, 'pdf') and self.dnn_dataset is not None:
+            # Interpolate or match pdf values to the current x points
+            pdf_values = self.dnn_dataset.pdf_norm # This is a simplified access, might need interpolation
+            # For proper implementation, we might need to interpolate pdf at points x
+            mean_pdf = (flow_pdf + pdf_values[:u.shape[0]]) / 2.0
+            return mean_pdf # Simple truncation for shape matching and calculate average
+        else:
+            raise ValueError("PDF values not available. Make sure _prepare has been called.")
+
+    # def mean_pdf_kld(self, x):
+    #     """
+    #     Compute KL divergence between mean PDF and actual distribution.
+        
+    #     The KL divergence is computed as:
+    #     KL(mean_pdf || actual_pdf) = E_mean[log(mean_pdf/actual_pdf)]
+    #                                = E_mean[log(mean_pdf) - log(actual_pdf)]
+        
+    #     Returns:
+    #         kl_div: KL divergence value
+    #     """
+    #     # Compute the mean PDF
+    #     mean_pdf = self.compute_pdf_mean(x)
+        
+    #     # Get the actual PDF values from the dataset
+    #     if hasattr(self.dnn_dataset, 'pdf_norm') and self.dnn_dataset.pdf_norm is not None:
+    #         actual_pdf = self.dnn_dataset.pdf_norm[:mean_pdf.shape[0]]
+    #     else:
+    #         # If normalized PDF is not available, compute it from the mixture model
+    #         actual_pdf = torch.exp(self.base_dataset.mix.log_prob(x))
+    #         # Normalize the PDF values
+    #         actual_pdf = actual_pdf / torch.sum(actual_pdf) * actual_pdf.shape[0]
+            
+    #     # Add small epsilon to prevent log(0)
+    #     epsilon = 1e-10
+    #     mean_pdf = mean_pdf + epsilon
+    #     actual_pdf = actual_pdf + epsilon
+        
+    #     # Compute KL divergence: KL(P||Q) = E_P[log(P/Q)]
+    #     log_mean_pdf = torch.log(mean_pdf)
+    #     log_actual_pdf = torch.log(actual_pdf)
+    #     kl_div = torch.mean(log_mean_pdf - log_actual_pdf)
+        
+    #     return kl_div
+
+# def compute_mse(
+#     self,
+#     model_pdf=None,
+#     model_name=None,
+#     num_samples=10000,
+#     bins=50,
+#     qmin=0.01,
+#     qmax=0.99,            # 可调用：lambda n -> (n,2) torch.Tensor 采样点   # 可调用：lambda X,Y -> Z 密度矩阵，X,Y为meshgrid
+#     pdf_eps=1e-12,
+# ):
+
+    def model_mse_result(self, x):
+        # Define lambda functions that return the appropriate values
+        dnn_lambda = lambda X, Y: self._evaluate_on_grid(self.dnn_dataset.pdf_norm, X, Y)
+        flow_lambda = lambda X, Y: torch.exp(self.network.flow.forward(
+            torch.tensor(np.column_stack([X.ravel(), Y.ravel()]), dtype=torch.float32, device=self.device)
+        )).reshape(X.shape)
+        mean_lambda = lambda X, Y: self._evaluate_on_grid(self.compute_pdf_mean(x), X, Y)
+        wsga_lambda = lambda X, Y: self.base_dataset.mix.log_prob(
+            torch.tensor(np.column_stack([X.ravel(), Y.ravel()]), dtype=torch.float32, device=self.device)
+        ).exp().reshape(X.shape)
+        
+        dnn_mse = compute_mse(self, dnn_lambda, 'dnn')
+        flow_mse = compute_mse(self, flow_lambda, 'flow')
+        mean_mse = compute_mse(self, mean_lambda, 'mean')
+        wsga_mse = compute_mse(self, wsga_lambda, 'wsga')
+        print(f"[Model: dnn]  MSE = {dnn_mse:.6e}")
+        print(f"[Model: flow] MSE = {flow_mse:.6e}")
+        print(f"[Model: mean] MSE = {mean_mse:.6e}")
+        print(f"[Model: wsga] MSE = {wsga_mse:.6e}")
+        return None
+
+    def _evaluate_on_grid(self, pdf_values, X, Y):
+        """
+        Helper method to evaluate PDF values on a grid
+        This is a simplified version - in practice you might want to implement
+        proper interpolation
+        """
+        # For now, we'll just return a reshaped version of the PDF values
+        # A more sophisticated implementation would interpolate values at (X,Y) coordinates
+        return pdf_values[:X.size].reshape(X.shape)
+    
+    def forward_kld_mean(self, x):
+        """
+        Estimates forward KL divergence KL(actual || mean_pdf) in the same spirit as forward_kld:
+            KL(p || q_mean) = E_p[log p(x) - log q_mean(x)] = E_p[log p(x)] - E_p[log q_mean(x)]
+            
+        Note: This is NOT the same as the standard forward KL which typically computes:
+            KL(q || p) = E_q[log q(x) - log p(x)]
+            
+        The second term -E_p[log q_mean(x)] is returned here, while the first term 
+        E_p[log p(x)] (the negative entropy of true distribution) is omitted.
+        This value can be negative since we're missing the entropy term.
+
+        Args:
+            x: Batch sampled from the target (actual) distribution
+        Returns:
+            Scalar: estimate of -E_p[log q_mean(x)] (missing entropy term, can be negative)
+        """
+        # q_mean(x): mean PDF evaluated at data samples x
+        q_mean = self.compute_pdf_mean(x)   # shape: [len(x)], should be non-negative
+
+        # Numerical stability: avoid log(0)
+        eps = 1e-12
+        log_q_mean = torch.log(q_mean + eps)
+
+        # Return - E_p[log q(x)] (constant entropy term is dropped)
+        # This can be negative because the entropy term is missing
+        return -torch.mean(log_q_mean)
+    
+
+
+    def forward_kld_wsga(self, x):
+        log_q = self.base_dataset.mix.log_prob(x)
+        return -torch.mean(log_q)
+    
+    # Add a new method to compare all four KL divergence computations
+    def compare_all_forward_kld(self, x):
+        """
+        Compare all four forward KL divergence computation methods
+        
+        Args:
+            x: Batch sampled from the target distribution
+            
+        Returns:
+            Dictionary containing results from all four methods
+        """
+        # Method 1: Flow model's built-in forward KL
+        if self.network.flow is not None:
+            flow_kld = self.network.flow.forward_kld(x)
+        else:
+            flow_kld = None
+            
+        # Method 2: DNN-based forward KL
+        dnn_kld = self.network.dnn.forward_kld(x)
+        
+        # Method 3: Mean PDF-based forward KL
+        mean_kld = self.forward_kld_mean(x)
+        
+        # Method 4: WSGA-based forward KL
+        wsga_kld = self.forward_kld_wsga(x)
+        print(f"KL divergence results: flow_kld={flow_kld.item() if flow_kld is not None else None}, dnn_kld={dnn_kld.item()}, mean_kld={mean_kld.item()}, wsga_kld={wsga_kld.item()}")
+        
+        return {
+            'flow_kld': flow_kld.item() if flow_kld is not None else None,
+            'dnn_kld': dnn_kld.item(),
+            'mean_kld': mean_kld.item(),
+            'wsga_kld': wsga_kld.item()
+        }
 
     def loss_hjb(self, x, f, fx, pdf_values=None, model=None):
         """Compute Hamilton-Jacobi-Bellman residual loss"""
@@ -694,4 +862,84 @@ class DimensionReduction(EnergyLandscape):
             
         return loss_f
 
+def compute_mse(
+    landscape,
+    model_pdf=None,
+    model_name=None,
+    num_samples=10000,
+    bins=50,
+    qmin=0.01,
+    qmax=0.99,            # 可调用：lambda n -> (n,2) torch.Tensor 采样点   # 可调用：lambda X,Y -> Z 密度矩阵，X,Y为meshgrid
+    pdf_eps=1e-12,
+):
+    with torch.no_grad():
+        # 1) 真实样本
+        if landscape.base_dataset.simulation_data is not None and len(landscape.base_dataset.simulation_data) >= num_samples:
+            true_samples = landscape.base_dataset.simulation_data[:num_samples]
+        else:
+            true_samples = landscape.base_dataset.get_simulated_data(num_samples, landscape.problem.noise_strength)
 
+        true_np = true_samples.detach().cpu().numpy()
+        if true_np.shape[1] != 2:
+            # 若数据>2维，默认使用你已有的 index_1/index_2；否则要求正好2维
+            i = getattr(landscape, "index_1", 0)
+            j = getattr(landscape, "index_2", 1)
+            true_np = true_np[:, [i, j]]
+            
+        # ---- 2) 用分位数确定共享网格范围（稳健抑制离群点） ----
+        lo0 = np.quantile(true_np[:, 0], qmin)
+        hi0 = np.quantile(true_np[:, 0], qmax)
+        lo1 = np.quantile(true_np[:, 1], qmin)
+        hi1 = np.quantile(true_np[:, 1], qmax)
+
+        # 避免区间退化
+        if not np.isfinite([lo0,hi0,lo1,hi1]).all() or lo0==hi0 or lo1==hi1:
+            lo0, hi0 = float(true_np[:,0].min()), float(true_np[:,0].max())
+            lo1, hi1 = float(true_np[:,1].min()), float(true_np[:,1].max())
+        ranges = [[lo0, hi0], [lo1, hi1]]
+
+        # 4) 真实分布 PMF（计数归一）
+        tr_counts, xedges, yedges = np.histogram2d(
+            true_np[:,0], true_np[:,1], bins=bins, range=ranges, density=False
+        )
+        tr_total = tr_counts.sum()
+        if tr_total == 0:
+            # 极端：范围太窄，回退到极值范围
+            ranges = [[true_np[:,0].min(), true_np[:,0].max()],
+                    [true_np[:,1].min(), true_np[:,1].max()]]
+            tr_counts, xedges, yedges = np.histogram2d(
+                true_np[:,0], true_np[:,1], bins=bins, range=ranges, density=False
+            )
+            tr_total = max(tr_counts.sum(), 1)
+        tr_pmf = tr_counts / tr_total
+
+        # 用 PDF → PMF：先在格心评估 pdf，然后乘以 cell area，再归一
+        # 5.1 网格中心
+        xcenters = 0.5 * (xedges[:-1] + xedges[1:])
+        ycenters = 0.5 * (yedges[:-1] + yedges[1:])
+        X, Y = np.meshgrid(xcenters, ycenters, indexing="ij")  # 形状 [bins, bins]
+
+        # 5.2 评估密度
+        Z = model_pdf(X, Y)  # 期望返回 [bins, bins] 的密度矩阵
+        # 修改: 确保CUDA tensor转换为numpy前先移到CPU
+        if torch.is_tensor(Z):
+            Z = Z.detach().cpu().numpy()
+        Z = np.asarray(Z, dtype=float)
+        Z = np.maximum(Z, 0.0) + pdf_eps
+
+        # 5.3 变为 PMF：密度 * 面积，再全局归一
+        dx = (xedges[1] - xedges[0])
+        dy = (yedges[1] - yedges[0])
+        mass = Z * dx * dy
+        total_mass = np.sum(mass)
+        if not np.isfinite(total_mass) or total_mass <= 0:
+            # 兜底：改用非负归一
+            total_mass = np.sum(Z) + 1e-12
+            mass = Z / total_mass
+        mo_pmf = mass / np.sum(mass)
+
+        # 6) MSE（在 PMF 上）
+        mse = float(np.mean((mo_pmf - tr_pmf) ** 2))
+
+        print(f"[Model: {model_name}] MSE = {mse:.6e}")
+        return mse
