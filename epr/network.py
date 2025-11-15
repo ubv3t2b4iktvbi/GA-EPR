@@ -81,8 +81,7 @@ class DNN(nn.Module):
         
         out = self.layers(x)
         out = out * self.scale
-        return out
-    
+        return out #输出势能函数值
     def forward_kld(self, x):
         """Compute KL divergence loss (scaled by noise strength)
         
@@ -97,8 +96,17 @@ class DNN(nn.Module):
         """
         x = self._process_input(x)
         out = self.forward(x) / -self.problem.noise_strength
-        # Return -E_p[log q(x)] which can be positive or negative
-        return -torch.mean(out)
+        self.pdf_unnorm = torch.exp(out)
+
+        dx = x[1] - x[0]
+        # max_out = torch.max(out)
+        # exp_out = torch.exp(out - max_out)
+        Z = torch.sum(torch.exp(out) * dx)
+        self.cons = torch.log(Z)
+        self.pdf_norm = self.pdf_unnorm / torch.exp(self.cons)
+        
+        # 返回负的对数似然（考虑了归一化）
+        return -torch.mean(self.pdf_norm)
 
 
 class FlowNet(nn.Module):

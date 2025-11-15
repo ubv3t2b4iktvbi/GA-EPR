@@ -87,7 +87,8 @@ class SharedBaseDataset:
             torch.zeros(self.problem.input_dim, device=self.device),
             torch.eye(self.problem.input_dim, device=self.device)
         ).expand((batch_size,))#为每个样本准备的噪声分布 z_dist
-        padding = 0.1 * (self.problem.x_max - self.problem.x_min)
+        #padding = 0.1 * (self.problem.x_max - self.problem.x_min)
+        padding = 0
         self.bound_min = self.problem.x_min - padding
         self.bound_max = self.problem.x_max + padding
         with tqdm(total=self.args.sim_steps, desc=f'Simulating {batch_size} samples') as pbar:
@@ -463,8 +464,8 @@ class DNNDataset(Dataset):
                 self.x = self.base._uniform_sample((self.sample_size, 
                                                 self.base.problem.input_dim))
                 self.pdf = torch.exp(self.base.mix.log_prob(self.x))
-                # Normalize the PDF values so they sum to 1
-                self.pdf_norm = self.pdf / torch.sum(self.pdf) * self.sample_size
+                # # Normalize the PDF values so they sum to 1
+                # self.pdf_norm = self.pdf / torch.sum(self.pdf) * self.sample_size
 
                 # Calculate force values
                 self.f = self.base.force(self.x)
@@ -579,7 +580,7 @@ class FlowConstraintDataset(Dataset):
         if self.x is None:
             self._prepare()
         with torch.no_grad():
-            self.targets = dnn(self.x).detach()
+            self.targets = (self.x).detach()
 
     def __len__(self):
         return self.sample_size

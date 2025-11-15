@@ -44,7 +44,7 @@ def main(config_path=None):
             args.force_params = {'a': 1.0}
         elif config_path and 'ToggleBasic' in config_path:
             args.force_type = 'ToggleBasic'
-            args.force_params = {'lam': 1.0}
+            args.force_params = {'growth_rate': 1.0}
         else:
             args.force_type = 'bistable'  # 默认值
             args.force_params = {'a': 1.0}
@@ -74,15 +74,8 @@ def main(config_path=None):
 
     # Initialize energy landscape trainer
     landscape = EnergyLandscape(args, problem, network, force_fn)
-        # Compare all forward KL divergence methods
-    print("Comparing all forward KL divergence computation methods...")
-    # Generate some sample data for KL divergence comparison
-    if hasattr(landscape, 'base_dataset') and landscape.base_dataset.simulation_data is not None:
-        sample_data = landscape.base_dataset.simulation_data[:1000]  # Use first 1000 samples
-        kl_results = landscape.compare_all_forward_kld(sample_data)
-    else:
-        print("Warning: No simulation data available for KL divergence comparison")
-    landscape.model_mse_result(landscape.base_dataset.simulation_data)#data怎么写？
+
+    
 
 
     # Start training
@@ -93,6 +86,15 @@ def main(config_path=None):
     print("Generating final visualizations...")
     landscape._visualize(args.num_epochs)
     print(f"Results saved to {args.prefix}")
+
+    print("Comparing all forward KL divergence computation methods...")
+    # Generate some sample data for KL divergence comparison
+    if hasattr(landscape, 'base_dataset') and landscape.base_dataset.simulation_data is not None:
+        sample_data = landscape.base_dataset.simulation_data[:10000]  # Use first 1000 samples
+        kl_results = landscape.compare_all_forward_kld(sample_data)
+    else:
+        print("Warning: No simulation data available for KL divergence comparison")
+    landscape.model_mse_result(landscape.base_dataset.simulation_data)
 
 if __name__ == "__main__":
     import sys

@@ -10,14 +10,14 @@ flow_layers: 8
 flow_lr: 0.0003
 flow_num_blocks: 3
 force_params:
-  lam: 1.0
+  growth_rate: 1.4
 force_type: ToggleBasic
 hidden_sizes: 32,64,64,32
 num_epochs: 1000
 pdf_method: WSGA
 prefix: D:\GA-EPR\GA-EPR\results\ToggleBasic
-pretrain_dnn_epochs: 1000
-pretrain_flow_epochs: 1000
+pretrain_dnn_epochs: 600
+pretrain_flow_epochs: 600
 rand_num: 500
 rho_1: 1.0
 rho_2: 0.1
@@ -28,7 +28,7 @@ train_mode: hybrid
 update_interval: 20
 use_gpu: true
 val_interval: 20
-viz_interval: 20
+viz_interval: 5
 weight_decay: 1.0e-05
 wsga_delta_t: 0.1
 wsga_num_steps: 5000

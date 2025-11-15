@@ -135,13 +135,21 @@ class EnergyLandscape:
             print("Dependencies updated after pretraining.")
         self._execute_main_training_phase()
 
+    # def _execute_pretraining_phase(self):
+    #     """Handle all pretraining operations"""
+    #     if self.args.pretrain_dnn_epochs > 0:
+    #         self._run_pretraining('dnn', self.args.pretrain_dnn_epochs)
+        
+    #     if self.args.pretrain_flow_epochs > 0:
+    #         self._run_pretraining('flow', self.args.pretrain_flow_epochs)
+
     def _execute_pretraining_phase(self):
         """Handle all pretraining operations"""
-        if self.args.pretrain_dnn_epochs > 0:
-            self._run_pretraining('dnn', self.args.pretrain_dnn_epochs)
-        
         if self.args.pretrain_flow_epochs > 0:
             self._run_pretraining('flow', self.args.pretrain_flow_epochs)
+
+        if self.args.pretrain_dnn_epochs > 0:
+            self._run_pretraining('dnn', self.args.pretrain_dnn_epochs)
 
     def _run_pretraining(self, model_type, num_epochs):
         """Generic pretraining workflow"""
@@ -256,6 +264,7 @@ class EnergyLandscape:
         if val_metrics:
             val_str = "VALIDATION | " + self._format_metrics(val_metrics)
             print(val_str + "\n")
+            
 
     def _format_metrics(self, metrics):
         """Standardize metric formatting"""
@@ -586,7 +595,7 @@ class EnergyLandscape:
         # This requires that _prepare has been called and pdf is accessible
         if hasattr(self.dnn_dataset, 'pdf') and self.dnn_dataset is not None:
             # Interpolate or match pdf values to the current x points
-            dnn_pdf = self.dnn_dataset.pdf_norm # This is a simplified access, might need interpolation
+            dnn_pdf = self.network.dnn.pdf_norm # This is a simplified access, might need interpolation
             # For proper implementation, we might need to interpolate pdf at points x
             mean_pdf = (flow_pdf + dnn_pdf[:flow_pdf.shape[0]]) / 2.0
             return mean_pdf # Simple truncation for shape matching and calculate average
@@ -628,20 +637,10 @@ class EnergyLandscape:
         
     #     return kl_div
 
-# def compute_mse(
-#     self,
-#     model_pdf=None,
-#     model_name=None,
-#     num_samples=10000,
-#     bins=50,
-#     qmin=0.01,
-#     qmax=0.99,            # 可调用：lambda n -> (n,2) torch.Tensor 采样点   # 可调用：lambda X,Y -> Z 密度矩阵，X,Y为meshgrid
-#     pdf_eps=1e-12,
-# ):
 
     def model_mse_result(self, x):
         # Define lambda functions that return the appropriate values
-        dnn_lambda = lambda X, Y: self._evaluate_on_grid(self.dnn_dataset.pdf_norm, X, Y)
+        dnn_lambda = lambda X, Y: self._evaluate_on_grid(self.network.dnn.pdf_norm, X, Y)
         flow_lambda = lambda X, Y: torch.exp(self.network.flow.forward(
             torch.tensor(np.column_stack([X.ravel(), Y.ravel()]), dtype=torch.float32, device=self.device)
         )).reshape(X.shape)
@@ -668,7 +667,20 @@ class EnergyLandscape:
         """
         # For now, we'll just return a reshaped version of the PDF values
         # A more sophisticated implementation would interpolate values at (X,Y) coordinates
-        return pdf_values[:X.size].reshape(X.shape)
+        # 确保pdf_values的数量与X.size匹配，如果不匹配则进行插值或截断
+        target_size = X.size
+        if pdf_values.numel() == target_size:
+            return pdf_values.reshape(X.shape)
+        elif pdf_values.numel() > target_size:
+            # 如果pdf_values更大，则截断
+            return pdf_values[:target_size].reshape(X.shape)
+        else:
+            # 如果pdf_values更小，则重复最后一个元素
+            padded_values = torch.cat([
+                pdf_values, 
+                pdf_values[-1].repeat(target_size - pdf_values.numel())
+            ])
+            return padded_values.reshape(X.shape)
     
     def forward_kld_mean(self, x):
         """
