@@ -435,7 +435,7 @@ class EnergyLandscape:
             self.network.flow.update_q0(mle_loader.dataset.base.q0)
             
             # if getattr(constraint_loader.dataset, "targets", None) is None:
-            # # 用当前 DNN 先生成 constraint targets
+            # 用当前 DNN 先生成 constraint targets
             #     self.hybrid_dataset.update_dependencies(dnn_model=self.network.dnn)
             # 初始化优化器并清零梯度
             self.flow_optim.zero_grad()
@@ -655,24 +655,19 @@ class EnergyLandscape:
 
 
     def model_mse_result(self, x):
-        # Define lambda functions that return the appropriate values
-        dnn_lambda = lambda X, Y: self._evaluate_on_grid(self.network.dnn.pdf_norm, X, Y)
-        flow_lambda = lambda X, Y: torch.exp(self.network.flow.forward(
-            torch.tensor(np.column_stack([X.ravel(), Y.ravel()]), dtype=torch.float32, device=self.device)
-        )).reshape(X.shape)
-        mean_lambda = lambda X, Y: self._evaluate_on_grid(self.compute_pdf_mean(x), X, Y)
-        wsga_lambda = lambda X, Y: self.base_dataset.mix.log_prob(
-            torch.tensor(np.column_stack([X.ravel(), Y.ravel()]), dtype=torch.float32, device=self.device)
-        ).exp().reshape(X.shape)
-        
-        dnn_mse = compute_mse(self, dnn_lambda, 'dnn')
-        flow_mse = compute_mse(self, flow_lambda, 'flow')
-        mean_mse = compute_mse(self, mean_lambda, 'mean')
-        wsga_mse = compute_mse(self, wsga_lambda, 'wsga')
-        print(f"[Model: dnn]  MSE = {dnn_mse:.6e}")
-        print(f"[Model: flow] MSE = {flow_mse:.6e}")
-        print(f"[Model: mean] MSE = {mean_mse:.6e}")
-        print(f"[Model: wsga] MSE = {wsga_mse:.6e}")
+        # # Define lambda functions that return the appropriate values
+        # dnn_lambda = lambda X, Y: self._evaluate_on_grid(self.network.dnn.pdf_norm, X, Y)
+        # flow_lambda = lambda X, Y: torch.exp(self.network.flow.forward(
+        #     torch.tensor(np.column_stack([X.ravel(), Y.ravel()]), dtype=torch.float32, device=self.device)
+        # )).reshape(X.shape)
+        # mean_lambda = lambda X, Y: self._evaluate_on_grid(self.compute_pdf_mean(x), X, Y)
+        # wsga_lambda = lambda X, Y: self.base_dataset.mix.log_prob(
+        #     torch.tensor(np.column_stack([X.ravel(), Y.ravel()]), dtype=torch.float32, device=self.device)
+        # ).exp().reshape(X.shape)
+        for i in ['dnn', 'flow', 'mean', 'wsga']:
+            mse = compute_landscape_mse(self, i)
+            print(f"[Model: {i}]  MSE = {mse:.6e}")
+
         return None
 
     def _evaluate_on_grid(self, pdf_values, X, Y):
@@ -716,11 +711,11 @@ class EnergyLandscape:
             Scalar: estimate of -E_p[log q_mean(x)] (missing entropy term, can be negative)
         """
         # q_mean(x): mean PDF evaluated at data samples x
-        q_mean = self.compute_pdf_mean(x)   # shape: [len(x)], should be non-negative
-
+        self.q_mean = self.compute_pdf_mean(x)   # shape: [len(x)], should be non-negative
+    
         # Numerical stability: avoid log(0)
         eps = 1e-12
-        log_q_mean = torch.log(q_mean + eps)
+        log_q_mean = torch.log(self.q_mean + eps)
 
         # Return - E_p[log q(x)] (constant entropy term is dropped)
         # This can be negative because the entropy term is missing
@@ -729,8 +724,8 @@ class EnergyLandscape:
 
 
     def forward_kld_wsga(self, x):
-        log_q = self.base_dataset.mix.log_prob(x)
-        return -torch.mean(log_q)
+        self.wsga_log_q = self.base_dataset.mix.log_prob(x)
+        return -torch.mean(self.wsga_log_q)
     
     # Add a new method to compare all four KL divergence computations
     def compare_all_forward_kld(self, x):
@@ -802,7 +797,6 @@ class DimensionReduction(EnergyLandscape):
             lr=args.dnn_lr,
             weight_decay=args.weight_decay)
         
-
 
     def _save_checkpoint(self, suffix=''):
         """Override to include force network state"""
@@ -890,14 +884,13 @@ class DimensionReduction(EnergyLandscape):
             
         return loss_f
 
-def compute_mse(
+def compute_landscape_mse(
     landscape,
-    model_pdf=None,
     model_name=None,
     num_samples=10000,
     bins=50,
     qmin=0.01,
-    qmax=0.99,            # 可调用：lambda n -> (n,2) torch.Tensor 采样点   # 可调用：lambda X,Y -> Z 密度矩阵，X,Y为meshgrid
+    qmax=0.99,
     pdf_eps=1e-12,
 ):
     with torch.no_grad():
@@ -914,7 +907,7 @@ def compute_mse(
             j = getattr(landscape, "index_2", 1)
             true_np = true_np[:, [i, j]]
             
-        # ---- 2) 用分位数确定共享网格范围（稳健抑制离群点） ----
+        # 2) 用分位数确定共享网格范围（稳健抑制离群点）
         lo0 = np.quantile(true_np[:, 0], qmin)
         hi0 = np.quantile(true_np[:, 0], qmax)
         lo1 = np.quantile(true_np[:, 1], qmin)
@@ -940,34 +933,37 @@ def compute_mse(
             )
             tr_total = max(tr_counts.sum(), 1)
         tr_pmf = tr_counts / tr_total
-
+        
+        # 添加一个小epsilon避免log(0)
+        tr_pmf = tr_pmf + pdf_eps
+        tr_landscape = (-landscape.problem.noise_strength * np.log(tr_pmf))
+        
         # 用 PDF → PMF：先在格心评估 pdf，然后乘以 cell area，再归一
         # 5.1 网格中心
         xcenters = 0.5 * (xedges[:-1] + xedges[1:])
         ycenters = 0.5 * (yedges[:-1] + yedges[1:])
         X, Y = np.meshgrid(xcenters, ycenters, indexing="ij")  # 形状 [bins, bins]
 
-        # 5.2 评估密度
-        Z = model_pdf(X, Y)  # 期望返回 [bins, bins] 的密度矩阵
-        # 修改: 确保CUDA tensor转换为numpy前先移到CPU
-        if torch.is_tensor(Z):
-            Z = Z.detach().cpu().numpy()
-        Z = np.asarray(Z, dtype=float)
-        Z = np.maximum(Z, 0.0) + pdf_eps
-
-        # 5.3 变为 PMF：密度 * 面积，再全局归一
-        dx = (xedges[1] - xedges[0])
-        dy = (yedges[1] - yedges[0])
-        mass = Z * dx * dy
-        total_mass = np.sum(mass)
-        if not np.isfinite(total_mass) or total_mass <= 0:
-            # 兜底：改用非负归一
-            total_mass = np.sum(Z) + 1e-12
-            mass = Z / total_mass
-        mo_pmf = mass / np.sum(mass)
-
-        # 6) MSE（在 PMF 上）
-        mse = float(np.mean((mo_pmf - tr_pmf) ** 2))
+        # 5.2 评估势能函数值
+        # 修改: 计算势能函数而非概率密度
+        xy_tensor = torch.tensor(np.column_stack([X.ravel(), Y.ravel()]), dtype=torch.float32, device=landscape.device)
+        if model_name == 'dnn':
+            # 对于DNN模型，直接计算势能
+            Z = landscape.network.dnn(xy_tensor).detach().cpu().numpy()
+        elif model_name == 'flow':
+            # 对于Flow模型，计算标准化势能
+            Z = (-landscape.problem.noise_strength * landscape.network.flow.log_prob(xy_tensor)).detach().cpu().numpy()
+        elif model_name == 'mean':
+            # 修改: 正确调用q_mean函数
+            Z = (-landscape.problem.noise_strength * torch.log(landscape.q_mean + pdf_eps)).detach().cpu().numpy() 
+        else:
+            # 修改: 正确调用wsga_log_q函数
+            Z = (-landscape.problem.noise_strength * landscape.wsga_log_q).detach().cpu().numpy()
+            
+        Z = Z.reshape(X.shape)
+        model_landscape = Z
+        
+        mse = float(np.mean((model_landscape - tr_landscape) ** 2))
 
         print(f"[Model: {model_name}] MSE = {mse:.6e}")
         return mse
