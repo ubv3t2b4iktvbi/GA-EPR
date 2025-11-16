@@ -118,6 +118,11 @@ class EnergyLandscape:
         self.val_log_path = os.path.join(self.log_dir, 'val_metrics.csv')
         with open(self.val_log_path, 'w') as f:
             f.write('global_step,phase,dnn_loss,flow_mle_loss\n')
+        
+        # Detailed loss terms log
+        self.loss_terms_log_path = os.path.join(self.log_dir, 'loss_terms.csv')
+        with open(self.loss_terms_log_path, 'w') as f:
+            f.write('global_step,batch_idx,sample_idx,loss_term\n')
 
     def _create_directories(self):
         """Create required output directories"""
@@ -570,6 +575,11 @@ class EnergyLandscape:
         u_x = torch.autograd.grad(u.sum(), x, create_graph=True)[0]
         loss_terms = (f.detach() + u_x).pow(2).sum(dim=1)
         
+        # Record individual loss terms to CSV
+        with open(self.loss_terms_log_path, 'a') as csvfile:
+            for i, loss_term in enumerate(loss_terms.detach().cpu().numpy()):
+                csvfile.write(f'{self.global_step},0,{i},{loss_term}\n')
+        
         if pdf_values is not None:
             loss_terms *= pdf_values.detach()
             
@@ -583,6 +593,12 @@ class EnergyLandscape:
         u_x = torch.autograd.grad(u.sum(), x, create_graph=True)[0]
 
         loss_terms = (f[:, [self.index_1, self.index_2]].detach() + u_x).pow(2).sum(dim=1)
+        
+        # Record individual loss terms to CSV
+        with open(self.loss_terms_log_path, 'a') as csvfile:
+            for i, loss_term in enumerate(loss_terms.detach().cpu().numpy()):
+                csvfile.write(f'{self.global_step},0,{i},{loss_term}\n')
+        
         if pdf_values is not None:
             loss_terms *= pdf_values.detach()
             
