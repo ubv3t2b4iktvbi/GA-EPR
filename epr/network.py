@@ -96,17 +96,88 @@ class DNN(nn.Module):
         """
         x = self._process_input(x)
         out = self.forward(x) / -self.problem.noise_strength
-        self.pdf_unnorm = torch.exp(out)
+        self.log_pdf_unnorm = out  # 直接存储对数形式
 
-        dx = x[1] - x[0]
-        # max_out = torch.max(out)
-        # exp_out = torch.exp(out - max_out)
-        Z = torch.sum(torch.exp(out) * dx)
-        self.cons = torch.log(Z)
-        self.pdf_norm = self.pdf_unnorm / torch.exp(self.cons)
+        # 使用预计算的归一化常数，而不是每次都重新计算
+        if not hasattr(self, 'log_Z') or self.log_Z is None:
+            self.update_normalization_constant()
+
+        # 使用数值稳定的方法计算归一化概率的对数
+        # log(pdf_norm) = log(pdf_unnorm) - log(Z)
+        self.log_pdf_norm = self.log_pdf_unnorm - self.log_Z
+        self.pdf_norm = torch.exp(self.log_pdf_norm)
         
         # 返回负的对数似然（考虑了归一化）
-        return -torch.mean(self.pdf_norm)
+        # -E[log(pdf_norm)] = -E[log_pdf_norm]
+        return -torch.mean(self.log_pdf_norm)
+
+    def update_normalization_constant(self):
+        """
+        Update the normalization constant log_Z based on current model parameters.
+        This should be called periodically during training to ensure accuracy,
+        especially when model parameters change significantly.
+        Uses numerically stable log-sum-exp computation.
+        Supports both 1D and multi-dimensional cases.
+        """
+        with torch.no_grad():
+            # 使用problem中定义的全局范围
+            grid_points_per_dim = 50  # 每个维度的网格点数，避免高维时网格点过多
+            device = next(self.parameters()).device  # 获取模型所在的设备
+            
+            # 获取输入维度
+            input_dim = self.problem.input_dim
+            
+            if input_dim == 1:
+                # 1D情况
+                x_min, x_max = self.problem.x_min, self.problem.x_max
+                x_grid = torch.linspace(x_min, x_max, grid_points_per_dim).to(device)
+                x_grid = x_grid.reshape(-1, 1)
+                
+                # 在网格点上计算势能的对数形式
+                out_grid = self.forward(x_grid) / -self.problem.noise_strength
+                
+                # 计算dx
+                dx = (x_max - x_min) / (grid_points_per_dim - 1)
+                log_dx = torch.log(torch.tensor(dx, device=device))
+                
+                # 使用数值稳定的log-sum-exp计算log(Z)
+                log_Z_terms = out_grid + log_dx
+                self.log_Z = torch.logsumexp(log_Z_terms, dim=0)
+                
+            else:
+                # 多维情况
+                x_min, x_max = self.problem.x_min, self.problem.x_max
+                
+                # 创建多维网格
+                grids = []
+                for i in range(input_dim):
+                    grid = torch.linspace(x_min, x_max, grid_points_per_dim).to(device)
+                    grids.append(grid)
+                
+                # 创建网格点组合
+                mesh_grids = torch.meshgrid(*grids, indexing='ij')
+                x_grid = torch.stack([grid.flatten() for grid in mesh_grids], dim=1)
+                
+                # 在网格点上计算势能的对数形式
+                out_grid = self.forward(x_grid) / -self.problem.noise_strength
+                
+                # 计算每个维度的dx
+                dx = (x_max - x_min) / (grid_points_per_dim - 1)
+                # 多维情况下的体积元
+                volume_element = dx ** input_dim
+                log_volume_element = torch.log(torch.tensor(volume_element, device=device))
+                
+                # 使用数值稳定的log-sum-exp计算log(Z)
+                log_Z_terms = out_grid + log_volume_element
+                self.log_Z = torch.logsumexp(log_Z_terms, dim=0)
+
+
+    def reset_normalization_constant(self):
+        """
+        Reset the normalization constant, forcing it to be recomputed on next use.
+        This can be called at the beginning of each epoch or training cycle.
+        """
+        self.log_Z = None
 
 
 class FlowNet(nn.Module):

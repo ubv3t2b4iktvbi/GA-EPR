@@ -2,7 +2,7 @@ import os
 import numpy as np
 from utils import ModelArgs, Problem, set_seed_everywhere
 from network import NetworkWrapper
-from landscape import EnergyLandscape, compute_mse
+from landscape import EnergyLandscape, compute_landscape_mse
 from dynamics import get_force_
 
 def main(config_path=None):

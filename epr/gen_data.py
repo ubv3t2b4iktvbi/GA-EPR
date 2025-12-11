@@ -91,6 +91,10 @@ class SharedBaseDataset:
         padding = 0
         self.bound_min = self.problem.x_min - padding
         self.bound_max = self.problem.x_max + padding
+        # self.bound_min_x = self.problem.x_min - padding
+        # self.bound_max_x = self.problem.x_max + padding
+        # self.bound_min_y = self.problem.y_min - padding
+        # self.bound_max_y = self.problem.y_max + padding
         with tqdm(total=self.args.sim_steps, desc=f'Simulating {batch_size} samples') as pbar:
             for step in range(self.args.sim_steps):
                 x = self._sde_step(x, z_dist, noise_strength)
@@ -168,7 +172,7 @@ class SharedBaseDataset:
                 plt.ylabel('X2')
                 plt.grid(alpha=0.3)
                 plt.tight_layout()
-                save_path = os.path.join(save_dir, "wsga_gmm_samples_2d.png")
+                save_path = os.path.join(save_dir, f"wsga_gmm_samples_2d_growth_rate_{self.force.gr}.png")
                 plt.savefig(save_path, dpi=300)
                 plt.close()
                 print(f"[Saved] 2D GMM figure saved to: {save_path}")

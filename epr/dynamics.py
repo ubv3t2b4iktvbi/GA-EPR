@@ -202,7 +202,7 @@ def trasns_fitting(lambda_, pars):
         return lambda_ * (a + b / (c + (lambda_ / d) ** e))
 
 class ToggleBasic(Force):
-    def __init__(self, growth_rate=1.4):
+    def __init__(self, growth_rate):
         # 基本参数
         #self.k_t = 1.0
         #self.k_l = 2.0
@@ -211,8 +211,9 @@ class ToggleBasic(Force):
         self.n_t = 2.0
         self.n_l = 4.0
         self.tau_p_trc = 0.13 #L2  # Ptrc leakage, TetR leakage expression level
-        self.tau_p_ltet = 0.0015    # PLtetO-1 leakage, LacI leakage
-        self.alphal_factor = 1.1  #???
+        self.tau_p_ltet = 0.015    # PLtetO-1 leakage, LacI leakage
+        self.alphal_factor = 1.1
+        self.alphat_factor = 1.1  #???
         self.gr = growth_rate   # type: float # cell growth rate
         self.protein_decay = 0.0
 
@@ -302,22 +303,21 @@ class ToggleBasic(Force):
 
         laci_tot = y[..., 0]
         tetr_tot = y[..., 1]
-        # laci_tot = 0.75*laci_tot - 10
-        # #tetr_tot = 0.7 * tetr_tot - 10(越大越往里压)
-        # tetr_tot = 0.5 * tetr_tot - 5
-        laci_tot = laci_tot - 10
-        #tetr_tot = 0.7 * tetr_tot - 10(越大越往里压)
-        tetr_tot = 0.6 * tetr_tot - 5
+
+        # #gr = 0.2
+        # laci_tot = 0.3 * laci_tot - 30
+        # tetr_tot = 0.4 * tetr_tot + 320 #（系数越小纵轴越大）
+        # laci_tot = 0.25 * (laci_tot )
+        # tetr_tot =  1 *  (tetr_tot +0)
+
         # # 诱导剂有效自由浓度
-        # tetr = tetr_tot * (1.0 + (self.atc_conc / self.k_atc) * tetr_tot) ** (-self.m)
-        # laci = laci_tot * (1.0 + (self.iptg_conc / self.k_iptg) * laci_tot) ** (-self.n)
-        tetr = tetr_tot
-        laci = laci_tot
+        tetr = tetr_tot * (1.0 + (self.atc_conc / self.k_atc) * tetr_tot) ** (-self.m)
+        laci = laci_tot * (1.0 + (self.iptg_conc / self.k_iptg) * laci_tot) ** (-self.n)
         
+        #计算蛋白质浓度的时间变化率
         dev_laci = self.alpha_ltet * self.h_t(tetr) - laci_tot * (self.gr + self.protein_decay)
         dev_tetr = self.alpha_trc  * self.h_l(laci) - tetr_tot * (self.gr + self.protein_decay)
-        #dev_laci*= 0.75
-        dev_tetr *= 0.6
+        
         dy = torch.stack([dev_laci, dev_tetr], dim=-1)  # (..., 2)
         return dy.squeeze(0) if dy.shape[0] == 1 else dy
 
