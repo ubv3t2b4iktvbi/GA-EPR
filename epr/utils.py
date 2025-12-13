@@ -115,20 +115,46 @@ class Problem:
     # Meta parameters
     meta_dim: int = 0
     
+    # sim_max: float = 500
+    # sim_min: float = 0
+
     # Domain parameters
     x_max: float = 500
     x_min: float = 0
+    
+    # Adding support for separate y-axis range
+    y_max: float = 500
+    y_min: float = 0
+    
     # Sample sizes for different components
     dnn_sample_size: int = 100000
     condition_sample_size: int = 1000
     flow_sample_size: int = 10000
     flow_constraint_sample_size: int = 10000
 
+    def __post_init__(self):
+        """Set default values for y-axis range if not provided"""
+        if self.y_max is None:
+            self.y_max = self.x_max
+        if self.y_min is None:
+            self.y_min = self.x_min
+            
+        # Validate that min values are less than max values
+        if self.x_min >= self.x_max:
+            raise ValueError(f"x_min ({self.x_min}) must be less than x_max ({self.x_max})")
+        if self.y_min >= self.y_max:
+            raise ValueError(f"y_min ({self.y_min}) must be less than y_max ({self.y_max})")
+
     @classmethod
     def from_yaml(cls, yaml_path):
         """Create Problem instance from YAML configuration file"""
         with open(yaml_path, 'r') as f:
             config = yaml.safe_load(f)
+        # Handle case where y_min or y_max might not be present in older configs
+        if 'y_min' not in config:
+            config['y_min'] = None
+        if 'y_max' not in config:
+            config['y_max'] = None
         return cls(**config)
     
     def save_to_yaml(self, yaml_path):

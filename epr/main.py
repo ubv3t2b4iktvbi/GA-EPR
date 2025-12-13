@@ -75,9 +75,6 @@ def main(config_path=None):
     # Initialize energy landscape trainer
     landscape = EnergyLandscape(args, problem, network, force_fn)
 
-    
-
-
     # Start training
     print("Starting training...")
     landscape.train()
@@ -87,14 +84,14 @@ def main(config_path=None):
     landscape._visualize(args.num_epochs)
     print(f"Results saved to {args.prefix}")
 
-    print("Comparing all forward KL divergence computation methods...")
-    # Generate some sample data for KL divergence comparison
-    if hasattr(landscape, 'base_dataset') and landscape.base_dataset.simulation_data is not None:
-        sample_data = landscape.base_dataset.simulation_data[:10000]  # Use first 1000 samples
-        kl_results = landscape.compare_all_forward_kld(sample_data)
-    else:
-        print("Warning: No simulation data available for KL divergence comparison")
-    landscape.model_mse_result(landscape.base_dataset.simulation_data)
+    # print("Comparing all forward KL divergence computation methods...")
+    # # Generate some sample data for KL divergence comparison
+    # if hasattr(landscape, 'base_dataset') and landscape.base_dataset.simulation_data is not None:
+    #     sample_data = landscape.base_dataset.simulation_data[:10000]  # Use first 1000 samples
+    #     kl_results = landscape.compare_all_forward_kld(sample_data)
+    # else:
+    #     print("Warning: No simulation data available for KL divergence comparison")
+    # landscape.model_mse_result(landscape.base_dataset.simulation_data)
 
 if __name__ == "__main__":
     import sys

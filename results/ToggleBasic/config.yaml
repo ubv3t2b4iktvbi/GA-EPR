@@ -10,14 +10,15 @@ flow_layers: 8
 flow_lr: 0.0003
 flow_num_blocks: 3
 force_params:
-  growth_rate: 1.4
+  ToggleBasic:
+    growth_rate: 0.2
 force_type: ToggleBasic
 hidden_sizes: 32,64,64,32
 num_epochs: 1000
-pdf_method: WSGA
+pdf_method: Simulate
 prefix: D:\GA-EPR\GA-EPR\results\ToggleBasic
-pretrain_dnn_epochs: 600
-pretrain_flow_epochs: 600
+pretrain_dnn_epochs: 100
+pretrain_flow_epochs: 0
 rand_num: 500
 rho_1: 1.0
 rho_2: 0.1

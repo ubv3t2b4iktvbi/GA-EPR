@@ -96,7 +96,7 @@ class EnergyLandscape:
             Y = np.linspace(self.dnn_dataset.base.min_project-1, self.dnn_dataset.base.max_project+1, 501)
         else:
             X = np.linspace(self.problem.x_min, self.problem.x_max, 501)
-            Y = np.linspace(self.problem.x_min, self.problem.x_max, 501)
+            Y = np.linspace(self.problem.y_min, self.problem.y_max, 501)
         self.x_grid, self.y_grid = np.meshgrid(X, Y)
         self.grid_tensor = torch.tensor(
             np.column_stack([self.x_grid.ravel(), self.y_grid.ravel()]), 
@@ -190,12 +190,12 @@ class EnergyLandscape:
             self._handle_support_tasks()
             self.global_step += 1
             
-        # Visualize loss terms for the last batch after training completes
-        if self.args.train_mode in ['hybrid', 'dnn_only'] and self.last_dnn_batch is not None:
-            print("Visualizing loss terms for the last batch after training completion...")
-            x = self.last_dnn_batch['x'].to(self.device)
-            f = self.last_dnn_batch['f'].to(self.device)
-            self._visualize_loss_terms(x, f, suffix='_final')
+        # # Visualize loss terms for the last batch after training completes
+        # if self.args.train_mode in ['hybrid', 'dnn_only'] and self.last_dnn_batch is not None:
+        #     print("Visualizing loss terms for the last batch after training completion...")
+        #     x = self.last_dnn_batch['x'].to(self.device)
+        #     f = self.last_dnn_batch['f'].to(self.device)
+        #     self._visualize_loss_terms(x, f, suffix='_final')
 
     def _train_single_step(self):
         """Execute single training step based on mode"""
@@ -263,64 +263,64 @@ class EnergyLandscape:
         if self._should_save_checkpoint():
             self._save_checkpoint()
 
-    def _visualize_loss_terms(self, x, f, suffix=''):
-        """Visualize loss terms as a landscape similar to _visualize_component"""
-        # Calculate loss terms without reducing to mean
-        model = self.network.dnn
-        u = model(x)
-        u_x = torch.autograd.grad(u.sum(), x, create_graph=True)[0]
-        loss_terms = (f.detach() + u_x).pow(2).sum(dim=1)
+    # def _visualize_loss_terms(self, x, f, suffix=''):
+    #     """Visualize loss terms as a landscape similar to _visualize_component"""
+    #     # Calculate loss terms without reducing to mean
+    #     model = self.network.dnn
+    #     u = model(x)
+    #     u_x = torch.autograd.grad(u.sum(), x, create_graph=True)[0]
+    #     loss_terms = (f.detach() + u_x).pow(2).sum(dim=1)
         
-        # Convert to numpy for visualization
-        loss_terms_np = loss_terms.detach().cpu().numpy()
+    #     # Convert to numpy for visualization
+    #     loss_terms_np = loss_terms.detach().cpu().numpy()
         
-        # Reshape to grid format (assuming same structure as landscape)
-        loss_grid = loss_terms_np.reshape(501, 501)
+    #     # Reshape to grid format (assuming same structure as landscape)
+    #     loss_grid = loss_terms_np.reshape(501, 501)
         
-        # Create visualization
-        plt.figure(figsize=(10, 10))
-        ax = plt.axes()
-        color_map = 'rainbow'
-        surf = ax.pcolormesh(self.x_grid, self.y_grid, loss_grid, 
-                            cmap=color_map, shading='auto')
-        ax.contour(self.x_grid, self.y_grid, loss_grid, 50, cmap=color_map)
-        ax.set_title(f'Loss Terms Landscape (Step {self.global_step})')
-        ax.set_aspect('equal')
-        plt.colorbar(surf, shrink=0.5)
-        samples = self.base_dataset.simulation_data.cpu().numpy()
-        plt.scatter(samples[:, self.index_1], samples[:, self.index_2], s=0.1, c='blue')
+    #     # Create visualization
+    #     plt.figure(figsize=(10, 10))
+    #     ax = plt.axes()
+    #     color_map = 'rainbow'
+    #     surf = ax.pcolormesh(self.x_grid, self.y_grid, loss_grid, 
+    #                         cmap=color_map, shading='auto')
+    #     ax.contour(self.x_grid, self.y_grid, loss_grid, 50, cmap=color_map)
+    #     ax.set_title(f'Loss Terms Landscape (Step {self.global_step})')
+    #     ax.set_aspect('equal')
+    #     plt.colorbar(surf, shrink=0.5)
+    #     samples = self.base_dataset.simulation_data.cpu().numpy()
+    #     plt.scatter(samples[:, self.index_1], samples[:, self.index_2], s=0.1, c='blue')
         
-        # Save visualization
-        self._save_viz(suffix=f'loss_terms{suffix}')
+    #     # Save visualization
+    #     self._save_viz(suffix=f'loss_terms{suffix}')
         
-        # Create 3D visualization
-        fig = plt.figure()
-        ax = fig.add_subplot(111, projection='3d')
-        surf = ax.plot_surface(self.x_grid, self.y_grid, loss_grid, cmap='plasma', antialiased=True)
+    #     # Create 3D visualization
+    #     fig = plt.figure()
+    #     ax = fig.add_subplot(111, projection='3d')
+    #     surf = ax.plot_surface(self.x_grid, self.y_grid, loss_grid, cmap='plasma', antialiased=True)
         
-        # Set viewpoint to match ddga.py style
-        ax.view_init(elev=59, azim=-29)
+    #     # Set viewpoint to match ddga.py style
+    #     ax.view_init(elev=59, azim=-29)
         
-        # Set axis limits
-        x_range = [self.x_grid.min(), self.x_grid.max()]
-        y_range = [self.y_grid.min(), self.y_grid.max()]
-        ax.set_xlim(x_range)
-        ax.set_ylim(y_range)
+    #     # Set axis limits
+    #     x_range = [self.x_grid.min(), self.x_grid.max()]
+    #     y_range = [self.y_grid.min(), self.y_grid.max()]
+    #     ax.set_xlim(x_range)
+    #     ax.set_ylim(y_range)
         
-        # Set font properties
-        ax.tick_params(axis='both', which='major', labelsize=20)
-        ax.xaxis.line.set_linewidth(1.5)
-        ax.yaxis.line.set_linewidth(1.5)
-        ax.zaxis.line.set_linewidth(1.5)
+    #     # Set font properties
+    #     ax.tick_params(axis='both', which='major', labelsize=20)
+    #     ax.xaxis.line.set_linewidth(1.5)
+    #     ax.yaxis.line.set_linewidth(1.5)
+    #     ax.zaxis.line.set_linewidth(1.5)
         
-        # Set background colors
-        ax.xaxis.set_pane_color((1.0, 1.0, 1.0, 1.0))
-        ax.yaxis.set_pane_color((1.0, 1.0, 1.0, 1.0))
-        ax.zaxis.set_pane_color((1.0, 1.0, 1.0, 1.0))
+    #     # Set background colors
+    #     ax.xaxis.set_pane_color((1.0, 1.0, 1.0, 1.0))
+    #     ax.yaxis.set_pane_color((1.0, 1.0, 1.0, 1.0))
+    #     ax.zaxis.set_pane_color((1.0, 1.0, 1.0, 1.0))
         
-        # Save top view
-        self._save_viz(suffix=f'_loss_terms{suffix}_top')
-        plt.close()
+    #     # Save top view
+    #     self._save_viz(suffix=f'_loss_terms{suffix}_top')
+    #     plt.close()
 
     def _should_visualize(self):
         """Check visualization timing"""
@@ -407,8 +407,13 @@ class EnergyLandscape:
                                 cmap=color_map, shading='auto')
             ax.contour(self.x_grid, self.y_grid, landscape, 50, cmap=color_map)
             ax.set_title(f'{component.upper()} Landscape (Step {self.global_step})')
-            ax.set_aspect('equal')
+            ax.set_aspect('auto')
+            # 显式设置坐标轴范围，确保正确显示
+            ax.set_xlim(self.problem.x_min, self.problem.x_max)
+            ax.set_ylim(self.problem.y_min, self.problem.y_max)
             plt.colorbar(surf, shrink=0.5)
+            
+            # 绘制模拟数据点
             samples = self.base_dataset.simulation_data.cpu().numpy()
             plt.scatter(samples[:, self.index_1], samples[:, self.index_2], s=0.1, c='k')
         

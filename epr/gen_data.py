@@ -50,6 +50,8 @@ class SharedBaseDataset:
             self.max_required_size = flow_sample_size
         # Pre-simulated data - will be lazily initialized
         self.simulation_data = None
+        self.simulation_data_x = None
+        #self.simulation_data_y = None
 
         # GMM parameters cache
         self._gmm_params = None  
@@ -70,12 +72,19 @@ class SharedBaseDataset:
         - Return subsets as needed for efficiency
         """
         # Lazy initialization of the full simulation
+        # if self.simulation_data_x or self.simulation_data_y is None:
         if self.simulation_data is None:
             print(f"Pre-generating {self.max_required_size} simulation samples...")
+            # self.simulation_data_x, self.simulation_data_y, self.simulation_data = self._run_simulation(
+            #     self.max_required_size, 
+            #     noise_strength
+            # )
             self.simulation_data = self._run_simulation(
                 self.max_required_size, 
                 noise_strength
             )
+            # self.simulation_data_x.requires_grad_(True)
+            # self.simulation_data_y.requires_grad_(True)
             self.simulation_data.requires_grad_(True)
             print("Simulation complete and cached.")
         return self.simulation_data[:required_size]
@@ -89,17 +98,20 @@ class SharedBaseDataset:
         ).expand((batch_size,))#为每个样本准备的噪声分布 z_dist
         #padding = 0.1 * (self.problem.x_max - self.problem.x_min)
         padding = 0
-        self.bound_min = self.problem.x_min - padding
-        self.bound_max = self.problem.x_max + padding
-        # self.bound_min_x = self.problem.x_min - padding
-        # self.bound_max_x = self.problem.x_max + padding
-        # self.bound_min_y = self.problem.y_min - padding
-        # self.bound_max_y = self.problem.y_max + padding
+        # 使用对应维度的范围设置边界
+        # self.bound_min = self.problem.sim_min - padding
+        # self.bound_max = self.problem.sim_max + padding
+        self.bound_min_x = self.problem.x_min - padding
+        self.bound_max_x = self.problem.x_max + padding
+        self.bound_min_y = self.problem.y_min - padding
+        self.bound_max_y = self.problem.y_max + padding
         with tqdm(total=self.args.sim_steps, desc=f'Simulating {batch_size} samples') as pbar:
             for step in range(self.args.sim_steps):
+                # x, y, sim= self._sde_step(x, z_dist, noise_strength)
                 x = self._sde_step(x, z_dist, noise_strength)
                 pbar.set_description(f'Simulating {batch_size} samples (Step {step+1}/{self.args.sim_steps})')  
                 pbar.update(1)
+        # return x , y , sim
         return x
 
     def _sde_step(self, x, z_dist, noise_strength):
@@ -108,14 +120,36 @@ class SharedBaseDataset:
             dt = self.args.sim_dt
             z = z_dist.sample()
             x_new = x + dt*self.force(x) + math.sqrt(2*noise_strength*dt)*z
-            
-            # Reflect boundaries
-            x_new = torch.where(x_new < self.bound_min, 
-                            2*self.bound_min - x_new, x_new)
-            x_new = torch.where(x_new > self.bound_max,
-                            2*self.bound_max - x_new, x_new)
+        
+            # Reflect boundaries using corresponding dimension ranges
+            if self.problem.input_dim >= 2:
+                # 第一维度使用x_min和x_max
+                x_new[:, 0] = torch.where(x_new[:, 0] < self.problem.x_min, 
+                                          2*self.problem.x_min - x_new[:, 0], x_new[:, 0])
+                x_new[:, 0] = torch.where(x_new[:, 0] > self.problem.x_max,
+                                          2*self.problem.x_max - x_new[:, 0], x_new[:, 0])
+                
+                # 第二维度使用y_min和y_max
+                x_new[:, 1] = torch.where(x_new[:, 1] < self.problem.y_min, 
+                                          2*self.problem.y_min - x_new[:, 1], x_new[:, 1])
+                x_new[:, 1] = torch.where(x_new[:, 1] > self.problem.y_max,
+                                          2*self.problem.y_max - x_new[:, 1], x_new[:, 1])
+                
+                # 其他维度使用x_min和x_max
+                if self.problem.input_dim > 2:
+                    for i in range(2, self.problem.input_dim):
+                        x_new[:, i] = torch.where(x_new[:, i] < self.problem.x_min, 
+                                                  2*self.problem.x_min - x_new[:, i], x_new[:, i])
+                        x_new[:, i] = torch.where(x_new[:, i] > self.problem.x_max,
+                                                  2*self.problem.x_max - x_new[:, i], x_new[:, i])
+            else:
+                # 单维度情况
+                x_new = torch.where(x_new < self.problem.x_min, 
+                                    2*self.problem.x_min - x_new, x_new)
+                x_new = torch.where(x_new > self.problem.x_max,
+                                    2*self.problem.x_max - x_new, x_new)
+                
         return x_new.detach()
-
     @property
     def gmm_components(self):
         """Lazy-loaded GMM parameters with validation"""
@@ -383,11 +417,24 @@ class SharedBaseDataset:
 
     def _uniform_sample(self, size):
         """Generate uniform samples with gradient tracking"""
-        return Variable(
-            torch.rand(size) * (self.problem.x_max - self.problem.x_min) 
-            + self.problem.x_min,
-            requires_grad=True
-        ).to(self.device)
+        # 支持不同维度使用不同的范围
+        if len(size) == 2 and size[1] >= 2:
+            # 对于多维情况，分别使用各自维度的范围
+            samples = torch.zeros(size)
+            # 第一维度使用x_min和x_max
+            samples[:, 0] = torch.rand(size[0]) * (self.problem.x_max - self.problem.x_min) + self.problem.x_min
+            # 第二维度使用y_min和y_max（如果存在）
+            if size[1] > 1:
+                samples[:, 1] = torch.rand(size[0]) * (self.problem.y_max - self.problem.y_min) + self.problem.y_min
+                # 其他维度如果存在，继续使用x_min和x_max
+                if size[1] > 2:
+                    samples[:, 2:] = torch.rand(size[0], size[1]-2) * (self.problem.x_max - self.problem.x_min) + self.problem.x_min
+            samples = samples.to(self.device)
+        else:
+            # 原始逻辑，所有维度使用x_min和x_max
+            samples = (torch.rand(size) * (self.problem.x_max - self.problem.x_min) + self.problem.x_min).to(self.device)
+        
+        return Variable(samples, requires_grad=True)
 
 #交叉训练适配器
 class convert_nfdist(BaseDistribution):
