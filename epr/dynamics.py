@@ -304,14 +304,8 @@ class ToggleBasic(Force):
         laci_tot = y[..., 0]
         tetr_tot = y[..., 1]
 
-        # #gr = 0.2
-        # laci_tot = 0.3 * laci_tot - 30
-        # tetr_tot = 0.4 * tetr_tot + 320 #（系数越小纵轴越大）
-        # laci_tot = 0.25 * (laci_tot )
-        # tetr_tot =  1 *  (tetr_tot +0)
-
         # # 诱导剂有效自由浓度
-        tetr = tetr_tot * (1.0 + (self.atc_conc / self.k_atc) * tetr_tot) ** (-self.m)
+        tetr = tetr_tot * (1.0 + (self.atc_conc / self.k_atc) * tetr_tot) ** (-self.m) 
         laci = laci_tot * (1.0 + (self.iptg_conc / self.k_iptg) * laci_tot) ** (-self.n)
         
         #计算蛋白质浓度的时间变化率
