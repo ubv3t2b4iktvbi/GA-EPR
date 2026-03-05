@@ -64,6 +64,239 @@ class SharedBaseDataset:
         # Store projection indices
         self.index_1 = getattr(self.problem, 'index_1', 0)
         self.index_2 = getattr(self.problem, 'index_2', 1)
+        self._ed_test_done = False
+
+    # ---------- Goodness-of-fit helpers (Energy distance) ----------
+    def _energy_distance(self, x: np.ndarray, y: np.ndarray) -> float:
+        """
+        Energy distance statistic (larger => more different).
+        """
+        x = np.asarray(x, dtype=np.float64)
+        y = np.asarray(y, dtype=np.float64)
+        n, m = x.shape[0], y.shape[0]
+        d_xy = np.linalg.norm(x[:, None, :] - y[None, :, :], axis=2).sum()
+        d_xx = np.linalg.norm(x[:, None, :] - x[None, :, :], axis=2).sum()
+        d_yy = np.linalg.norm(y[:, None, :] - y[None, :, :], axis=2).sum()
+        return (2.0 / (n * m)) * d_xy - (1.0 / (n * n)) * d_xx - (1.0 / (m * m)) * d_yy
+
+    def _normalize_points(self, pts: np.ndarray, ref_pts: np.ndarray = None) -> np.ndarray:
+        """Normalize 2D points to [0, 1] using ref_pts min/max (default: pts)."""
+        pts = np.asarray(pts, dtype=np.float64)
+        ref = pts if ref_pts is None else np.asarray(ref_pts, dtype=np.float64)
+        x_min, x_max = ref[:, 0].min(), ref[:, 0].max()
+        y_min, y_max = ref[:, 1].min(), ref[:, 1].max()
+        denom_x = (x_max - x_min) if (x_max - x_min) != 0 else 1.0
+        denom_y = (y_max - y_min) if (y_max - y_min) != 0 else 1.0
+        out = np.empty_like(pts, dtype=np.float64)
+        out[:, 0] = (pts[:, 0] - x_min) / denom_x
+        out[:, 1] = (pts[:, 1] - y_min) / denom_y
+        return out
+
+    def _sample_mix_bounded(self, mix, num_samples, max_attempts=200, y_offset=0.0):
+        """Sample from mix constrained to [samp_x_min,x_max]x[samp_y_min,y_max]."""
+        x_min = self.problem.samp_x_min
+        x_max = self.problem.samp_x_max
+        y_min = self.problem.samp_y_min
+        y_max = self.problem.samp_y_max
+
+        samples = []
+        remaining = num_samples
+        attempts = 0
+        while remaining > 0 and attempts < max_attempts:
+            attempts += 1
+            with torch.no_grad():
+                batch = mix.sample((max(remaining * 2, 50),)).cpu().numpy()
+            mask = (
+                (batch[:, 0] >= x_min) & (batch[:, 0] <= x_max) &
+                (batch[:, 1] >= y_min) & (batch[:, 1] <= y_max)
+            )
+            if np.any(mask):
+                accepted = batch[mask]
+                take = accepted[:remaining]
+                samples.append(take)
+                remaining -= take.shape[0]
+
+        if remaining > 0:
+            # Fallback: clip to ensure bounds
+            with torch.no_grad():
+                batch = mix.sample((remaining,)).cpu().numpy()
+            batch[:, 0] = np.clip(batch[:, 0], x_min, x_max)
+            batch[:, 1] = np.clip(batch[:, 1], y_min, y_max)
+            samples.append(batch)
+
+        out = np.concatenate(samples, axis=0)
+        if y_offset != 0.0:
+            out[:, 1] = out[:, 1] + y_offset
+        return out
+
+    def _energy_distance_test(self, real_points, ref_sample_size=2000, num_bootstrap=200,
+                              mix=None, test_mode="fixed_x", normalize=False):
+        """
+        Right-tailed MC test: H0: real_points ~ self._mix.
+        Returns (statistic, p_value, null_stats).
+        """
+        x = np.asarray(real_points, dtype=np.float64)
+        ref_pts = x
+        if normalize:
+            x = self._normalize_points(x, ref_pts=ref_pts)
+        if mix is None:
+            mix = self._mix
+        with torch.no_grad():
+            y_ref = self._sample_mix_bounded(mix, ref_sample_size, y_offset=0.0)
+        if normalize:
+            y_ref = self._normalize_points(y_ref, ref_pts=ref_pts)
+        stat_obs = self._energy_distance(x, y_ref)
+
+        null_stats = []
+        for _ in range(num_bootstrap):
+            with torch.no_grad():
+                yb = self._sample_mix_bounded(mix, ref_sample_size)
+                if test_mode == "two_sample":
+                    xb = self._sample_mix_bounded(mix, x.shape[0])
+                else:
+                    xb = x
+            if normalize:
+                yb = self._normalize_points(yb, ref_pts=ref_pts)
+                if test_mode == "two_sample":
+                    xb = self._normalize_points(xb, ref_pts=ref_pts)
+            null_stats.append(self._energy_distance(xb, yb))
+        null_stats = np.asarray(null_stats)
+        p_val = (np.sum(null_stats >= stat_obs) + 1.0) / (num_bootstrap + 1.0)
+        return stat_obs, p_val, null_stats
+
+    def _energy_distance_similarity_test(self, real_points, ref_sample_size=2000,
+                                         baseline_samples=500, num_bootstrap=200,
+                                         mix=None, alpha=0.05, gamma=0.1, delta_c=0.1,
+                                         normalize=False):
+        """
+        Similarity test with baseline noise:
+          H0: T(P, P0) >= A + delta  vs  H1: T(P, P0) < A + delta
+        A = Quantile_{1-gamma}(T0),  T0 = T(X0, Y0), X0~P0, Y0~P0.
+        delta = c * A.
+        Returns (t_obs, upper_ci, A, delta, reject_h0).
+        """
+        x = np.asarray(real_points, dtype=np.float64)
+        ref_pts = x
+        if normalize:
+            x = self._normalize_points(x, ref_pts=ref_pts)
+        if mix is None:
+            mix = self._mix
+        with torch.no_grad():
+            y_ref = self._sample_mix_bounded(mix, ref_sample_size, y_offset=0.0)
+        if normalize:
+            y_ref = self._normalize_points(y_ref, ref_pts=ref_pts)
+        t_obs = self._energy_distance(x, y_ref)
+
+        # Step 3: baseline noise A from same-distribution samples
+        baseline = []
+        n = x.shape[0]
+        for _ in range(baseline_samples):
+            with torch.no_grad():
+                x0 = mix.sample((n,)).cpu().numpy()
+                y0 = mix.sample((ref_sample_size,)).cpu().numpy()
+            if normalize:
+                x0 = self._normalize_points(x0, ref_pts=ref_pts)
+                y0 = self._normalize_points(y0, ref_pts=ref_pts)
+            baseline.append(self._energy_distance(x0, y0))
+        baseline = np.asarray(baseline)
+        A = np.quantile(baseline, 1.0 - gamma)
+        delta = delta_c * A
+
+        # Step 4: upper CI for T(X, Y_ref) via resampling Y_ref (X fixed)
+        boot_stats = []
+        for _ in range(num_bootstrap):
+            with torch.no_grad():
+                yb = self._sample_mix_bounded(mix, ref_sample_size)
+            if normalize:
+                yb = self._normalize_points(yb, ref_pts=ref_pts)
+            boot_stats.append(self._energy_distance(x, yb))
+        boot_stats = np.asarray(boot_stats)
+        upper_ci = np.quantile(boot_stats, 1.0 - alpha)
+        reject_h0 = upper_ci < (A + delta)
+        return t_obs, upper_ci, A, delta, reject_h0
+
+    def _energy_distance_diff_test(self, real_points, ref_sample_size=200, num_bootstrap=200,
+                                   mix=None, normalize=False):
+        """
+        Difference test:
+          H0: X ~ P0  vs  H1: X !~ P0 (right tail).
+        t_obs = T(X, Y), Y~P0; null from Xb~P0, Yb~P0.
+        Returns (t_obs, p_value).
+        """
+        x = np.asarray(real_points, dtype=np.float64)
+        ref_pts = x
+        if normalize:
+            x = self._normalize_points(x, ref_pts=ref_pts)
+        if mix is None:
+            mix = self._mix
+        
+        with torch.no_grad():
+            y = self._sample_mix_bounded(mix, ref_sample_size)
+        if normalize:
+            y = self._normalize_points(y, ref_pts=ref_pts)
+        t_obs = self._energy_distance(x, y)
+
+        null_stats = []
+        for _ in range(num_bootstrap):
+            with torch.no_grad():
+                xb = self._sample_mix_bounded(mix, x.shape[0])
+                yb = self._sample_mix_bounded(mix, ref_sample_size)
+            if normalize:
+                xb = self._normalize_points(xb, ref_pts=ref_pts)
+                yb = self._normalize_points(yb, ref_pts=ref_pts)
+            null_stats.append(self._energy_distance(xb, yb))
+        null_stats = np.asarray(null_stats)
+        p_val = (np.sum(null_stats >= t_obs) + 1.0) / (num_bootstrap + 1.0)
+        return t_obs, p_val
+
+    def print_wsga_energy_distance_test(self, real_points=None, ref_sample_size=200, num_bootstrap=200, force_run=False):
+        """
+        Print energy distance test result during main.py execution.
+        """
+        if self.problem.input_dim != 2:
+            print("[EnergyDistance] skipped: input_dim != 2")
+            return
+        if self._ed_test_done and not force_run:
+            return
+        test_mode = getattr(self.args, "energy_test_mode", "fixed_x")
+        alpha = getattr(self.args, "energy_test_alpha", 0.05)
+        gamma = getattr(self.args, "energy_test_gamma", 0.1)
+        delta_c = getattr(self.args, "energy_test_delta_c", 0.1)
+        normalize = True
+        if test_mode == "similarity":
+            t_obs, upper_ci, A, delta, reject_h0 = self._energy_distance_similarity_test(
+                real_points,
+                ref_sample_size=ref_sample_size,
+                num_bootstrap=num_bootstrap,
+                alpha=alpha,
+                gamma=gamma,
+                delta_c=delta_c,
+                normalize=normalize,
+            )
+            verdict = "REJECT H0 (close enough)" if reject_h0 else "FAIL TO REJECT H0 (not close enough)"
+            print(f"[EnergyDistance][similarity] T_obs={t_obs:.4f}, U_1-a={upper_ci:.4f}, "
+                  f"A={A:.4f}, delta={delta:.4f}, alpha={alpha:.3f}, gamma={gamma:.3f} => {verdict}")
+        else:
+            ed_stat, ed_p, _ = self._energy_distance_test(
+                real_points,
+                ref_sample_size=ref_sample_size,
+                num_bootstrap=num_bootstrap,
+                test_mode=test_mode,
+                normalize=normalize,
+            )
+            print(f"[EnergyDistance][{test_mode}] T_ed={ed_stat:.4f}, right-tailed p={ed_p:.4f} "
+                  f"(H0: real_points ~ wsga mix)")
+
+        if getattr(self.args, "energy_test_run_diff", True):
+            t_obs_d, p_val_d = self._energy_distance_diff_test(
+                real_points,
+                ref_sample_size=ref_sample_size,
+                num_bootstrap=num_bootstrap,
+                normalize=normalize,
+            )
+            print(f"[EnergyDistance][diff] T_obs={t_obs_d:.4f}, right-tailed p={p_val_d:.4f} "
+                  f"(H0: real_points ~ wsga mix)")
+        self._ed_test_done = True
 
     def get_simulated_data(self, required_size, noise_strength):
         """
@@ -150,12 +383,34 @@ class SharedBaseDataset:
                                     2*self.problem.x_max - x_new, x_new)
                 
         return x_new.detach()
+    
+    def _init_grid_data(self):
+        """Initialize visualization grid data"""
+        if self.problem.input_dim > 2:
+            X = np.linspace(self.dnn_dataset.base.min_project-1, self.dnn_dataset.base.max_project+1, 501)
+            Y = np.linspace(self.dnn_dataset.base.min_project-1, self.dnn_dataset.base.max_project+1, 501)
+        else:
+            X = np.linspace(self.problem.x_min, self.problem.x_max, 501)
+            Y = np.linspace(self.problem.y_min, self.problem.y_max, 501)
+        self.x_grid, self.y_grid = np.meshgrid(X, Y)
+        self.grid_tensor = torch.tensor(
+            np.column_stack([self.x_grid.ravel(), self.y_grid.ravel()]), 
+            dtype=torch.float32, device=self.device)
+
     @property
     def gmm_components(self):
         """Lazy-loaded GMM parameters with validation"""
         if self._gmm_params is None:
             self._gmm_params = self._calculate_gmm()
         return self._gmm_params
+    
+    def _save_viz(self, suffix=''):
+        """Save visualization without relying on global attributes"""
+        # 简单地保存到当前工作目录，带有一个基本的文件名
+        filename = f"gmm_visualization{suffix}.png"
+        plt.savefig(filename)
+        plt.close()
+
     @property
     def mix(self):
         if self._mix is None:
@@ -211,6 +466,127 @@ class SharedBaseDataset:
                 plt.close()
                 print(f"[Saved] 2D GMM figure saved to: {save_path}")
 
+                self._init_grid_data()
+                landscape = self._mix.log_prob(self.grid_tensor).cpu().numpy().reshape(501, 501)
+                landscape = landscape*self.problem.noise_strength*(-1)
+                
+                #坐标伸缩
+                # 创建映射后的x_grid，将原始范围[self.problem.x_min, self.problem.x_max]映射到[30, 120]
+                original_x_range = self.problem.x_max - self.problem.x_min
+                target_x_min, target_x_max = self.problem.x_min, self.problem.x_max
+                #target_x_min, target_x_max = 100, 310
+                #target_x_min, target_x_max = 10, 100
+                target_x_range = target_x_max - target_x_min
+                # 创建映射后的y_grid
+                original_y_range = self.problem.y_max - self.problem.y_min
+                target_y_min, target_y_max = self.problem.y_min, self.problem.y_max
+                #target_y_min, target_y_max = 0, 300
+                #target_y_min, target_y_max = -20, 170
+                target_y_range = target_y_max - target_y_min
+                # 计算映射后的x_grid
+                mapped_x_grid = ((self.x_grid - self.problem.x_min) / original_x_range) * target_x_range + target_x_min
+                mapped_y_grid = ((self.y_grid - self.problem.y_min) / original_y_range) * target_y_range + target_y_min
+                
+                # 平移） 改
+                mapped_x_grid = mapped_x_grid + 0
+                mapped_y_grid = mapped_y_grid + 0
+                
+                ax = plt.axes()
+                color_map = 'rainbow'
+                surf = ax.pcolormesh(mapped_x_grid, mapped_y_grid, landscape, 
+                                    cmap=color_map, shading='auto')
+                ax.contour(mapped_x_grid, mapped_y_grid, landscape, 50, cmap=color_map)
+                ax.set_title(f'wsga Landscape')
+                ax.set_aspect('auto')
+                # 显式设置坐标轴范围，确保正确显示 改
+                ax.set_xlim(target_x_min + 0, target_x_max + 0)
+                ax.set_ylim(target_y_min + 0, target_y_max + 0)  # 同时更新y轴范围
+
+                real_points= [
+                            (137.8, 18),
+                            (219.5, 24.2),
+                            (246.5, 30.1),
+                            (297, 38),
+                            (321.4, 48.4),
+                            (298, 62.5),
+                            (138.4, 10.8),
+                            (184.5, 17.7),
+                            (273.9, 22.4),
+                            (337.7, 28.8),
+                            (224.4, 67.4),
+                            (208.9, 53.3),
+                            (221.3, 47.6),
+                            (274.3, 24.9),
+                        ]
+                # Energy distance test: delegate to unified printer (respects test_mode)
+                if not self._ed_test_done:
+                    self.print_wsga_energy_distance_test(
+                        real_points=real_points,
+                        force_run=True,
+                    )
+                
+                for point_x, point_y in real_points:
+                    ax.scatter(point_x, point_y, color='black', s=50, zorder=5)
+                    # 在点旁边标注坐标值
+                    ax.annotate(f'({point_x:.1f}, {point_y:.1f})', 
+                               xy=(point_x, point_y), 
+                               xytext=(3, 3),  # 减少偏移量
+                               textcoords='offset points',
+                               fontsize=6,      # 减小字体大小
+                               alpha=0.7,
+                               bbox=dict(boxstyle='round,pad=0.1', fc='white', ec='none', alpha=0.5))  # 添加半透明背景框
+                
+                plt.colorbar(surf, shrink=0.5)
+                
+                # # 绘制模拟数据点
+                # samples = self.simulation_data.cpu().numpy()
+                # plt.scatter(samples[:, self.index_1], samples[:, self.index_2], s=0.1, c='k')
+            
+                self._save_viz(suffix=f'wsga_{self.force.gr}')
+                
+                # 添加俯视图
+                fig = plt.figure()
+                ax = fig.add_subplot(111, projection='3d')
+                surf = ax.plot_surface(mapped_x_grid, mapped_y_grid, landscape, cmap='rainbow', antialiased=True)
+                
+                # 设置视角：仰角60度，选择较清晰的观测方位
+                ax.view_init(elev=60, azim=-150)
+                
+
+                # 为每个真实数据点找到对应的z值（势能值）并加1
+                for point_x, point_y in real_points:
+                    # 找到最接近的网格点索引
+                    x_idx = np.argmin(np.abs(mapped_x_grid[0, :] - point_x))
+                    y_idx = np.argmin(np.abs(mapped_y_grid[:, 0] - point_y))
+                    
+                    # 获取对应位置的势能值并加1
+                    z_value = landscape[y_idx, x_idx] + 100
+                    
+                    # 在3D图上绘制点，使用更鲜艳的颜色和更大的尺寸
+                    ax.scatter(point_x, point_y, z_value, color='black', s=50, label=f'({point_x}, {point_y})')
+                
+                # 设置坐标轴范围
+                x_range = [mapped_x_grid.min(), mapped_x_grid.max()]
+                y_range = [mapped_y_grid.min(), mapped_y_grid.max()]  # 使用映射后的范围
+                ax.set_xlim(x_range)
+                ax.set_ylim(y_range)
+                
+                # 设置字体属性
+                ax.tick_params(axis='both', which='major', labelsize=20)
+                ax.xaxis.line.set_linewidth(1.5)
+                ax.yaxis.line.set_linewidth(1.5)
+                ax.zaxis.line.set_linewidth(1.5)
+                
+                # 设置背景颜色
+                ax.xaxis.set_pane_color((1.0, 1.0, 1.0, 1.0))
+                ax.yaxis.set_pane_color((1.0, 1.0, 1.0, 1.0))
+                ax.zaxis.set_pane_color((1.0, 1.0, 1.0, 1.0))
+                
+                # 保存俯视图
+                self._save_viz(suffix=f'wsga_top_{self.force.gr}')
+                plt.show()
+                plt.close()
+                
         return self._mix
     @property
     def q0(self):

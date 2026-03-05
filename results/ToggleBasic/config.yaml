@@ -5,19 +5,24 @@ ddga_num_steps: 200000
 device: cuda
 dnn_lr: 0.001
 dnn_steps_per_flow_step: 5
+energy_test_alpha: 0.15
+energy_test_delta_c: 0.1
+energy_test_gamma: 0.05
+energy_test_mode: similarity
+energy_test_run_diff: true
 flow_hidden_units: 128
 flow_layers: 8
 flow_lr: 0.0003
 flow_num_blocks: 3
 force_params:
   ToggleBasic:
-    growth_rate: 0.2
+    growth_rate: 0.85
 force_type: ToggleBasic
 hidden_sizes: 32,64,64,32
 num_epochs: 1000
-pdf_method: Simulate
+pdf_method: WSGA
 prefix: D:\GA-EPR\GA-EPR\results\ToggleBasic
-pretrain_dnn_epochs: 100
+pretrain_dnn_epochs: 600
 pretrain_flow_epochs: 0
 rand_num: 500
 rho_1: 1.0

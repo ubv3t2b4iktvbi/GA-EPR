@@ -28,6 +28,8 @@ class EnergyLandscape:
         # Store last batch for loss terms visualization
         self.last_dnn_batch = None
         self._init_datasets()  
+        if hasattr(self, "base_dataset"):
+            self.base_dataset.print_wsga_energy_distance_test()
         self._init_optimizers()
         self._init_hybrid_scheduler()
 
@@ -249,15 +251,6 @@ class EnergyLandscape:
         """Manage visualization and checkpoints"""
         if self._should_visualize():
             self._visualize()
-            # Save last batch for potential future use
-            if self.args.train_mode in ['hybrid', 'dnn_only']:
-                dnn_loader = self.hybrid_dataset.get_loader('dnn', self.args.batch_size)
-                for batch in dnn_loader:
-                    self.last_dnn_batch = {
-                        'x': batch['x'].to(self.device),
-                        'f': batch['f'].to(self.device),
-                        'fx': batch['fx'].to(self.device)
-                    }
         
         if self._should_save_checkpoint():
             self._save_checkpoint()
@@ -326,6 +319,10 @@ class EnergyLandscape:
         """Generate visualization plots"""
         self.network.eval()
         with torch.no_grad():
+            # # WSGA visualization
+            # if self.args.train_mode in ['wsga']:
+            #     self._visualize_component('wsga', suffix)
+
             # DNN visualization
             if self.args.train_mode in ['hybrid', 'dnn_only']:
                 self._visualize_component('dnn', suffix)
@@ -348,16 +345,25 @@ class EnergyLandscape:
         grid_force = self.force_fn.force(grid_tensor_for_grad)
         
         # Calculate loss terms on the grid
-
         grid_loss_terms = (grid_force + u_x).pow(2).sum(dim=1)
+        
+        # Record loss terms to CSV file
+        if hasattr(self, 'loss_terms_log_path'):
+            loss_terms_cpu = grid_loss_terms.detach().cpu().numpy()
+            with open(self.loss_terms_log_path, 'a') as csvfile:
+                for i, loss_term in enumerate(loss_terms_cpu):
+                    csvfile.write(f'{self.global_step},0,{i},{loss_term}\n')
         
         # Convert to numpy for visualization
         loss_grid = grid_loss_terms.detach().cpu().numpy().reshape(501, 501)
         
         # Create visualization
-        plt.figure(figsize=(10, 10))
-        ax = plt.axes()
-        color_map = 'turbo'
+        #plt.figure(figsize=(10, 10))
+        #ax = plt.axes()
+
+        fig, ax = plt.subplots(figsize=(8, 6), constrained_layout=True)
+        
+        color_map = 'Blues'
         surf = ax.pcolormesh(self.x_grid, self.y_grid, loss_grid, 
                             cmap=color_map, shading='auto')
         ax.contour(self.x_grid, self.y_grid, loss_grid, 50, cmap=color_map)
@@ -365,8 +371,9 @@ class EnergyLandscape:
         ax.set_aspect('auto')
         ax.set_xlim(self.problem.x_min, self.problem.x_max)
         ax.set_ylim(self.problem.y_min, self.problem.y_max)
-        plt.colorbar(surf, shrink=0.5)
-        
+        #plt.colorbar(surf, shrink=0.5)
+        fig.colorbar(surf, ax=ax, shrink=0.9, pad=0.02)
+
         # 绘制模拟数据点（如果可用）
         if (hasattr(self, 'base_dataset') and 
             self.base_dataset is not None and 
@@ -419,8 +426,8 @@ class EnergyLandscape:
         """Visualize specific component"""
         plt.figure(figsize=(10, 10))
         model = getattr(self.network, component)
-        if component == 'dnn' or self.problem.input_dim == 2:
 
+        if component == 'dnn' or self.problem.input_dim == 2:
             landscape = model(self.grid_tensor).cpu().numpy().reshape(501, 501)
         
             ax = plt.axes()
@@ -469,6 +476,7 @@ class EnergyLandscape:
             # 保存俯视图
             self._save_viz(suffix=f'_{component}{suffix}_top')
             plt.close()
+
 
     def _save_viz(self, suffix=''):
         """Save visualization with global step"""
@@ -651,7 +659,6 @@ class EnergyLandscape:
         return loss.item(), mse.item()
     
     
-
     def _validate(self):
         """Validation step implementation"""
         self.network.eval()
@@ -673,6 +680,8 @@ class EnergyLandscape:
                     loss_epr = self.loss_epr_high(x_full, f_full, pdf)
                 else:
                     loss_epr = self.loss_epr(x, f, pdf)
+                    self._visualize_loss_terms(x, f, suffix='')
+
                 loss_hjb = self.loss_hjb(x, f, fx, pdf)
                 total_loss = self.args.rho_1 * loss_epr + self.args.rho_2 * loss_hjb
                 metrics['dnn_loss'].append(total_loss.item())
@@ -726,40 +735,6 @@ class EnergyLandscape:
         else:
             raise ValueError("PDF values not available. Make sure _prepare has been called.")
 
-    # def mean_pdf_kld(self, x):
-    #     """
-    #     Compute KL divergence between mean PDF and actual distribution.
-        
-    #     The KL divergence is computed as:
-    #     KL(mean_pdf || actual_pdf) = E_mean[log(mean_pdf/actual_pdf)]
-    #                                = E_mean[log(mean_pdf) - log(actual_pdf)]
-        
-    #     Returns:
-    #         kl_div: KL divergence value
-    #     """
-    #     # Compute the mean PDF
-    #     mean_pdf = self.compute_pdf_mean(x)
-        
-    #     # Get the actual PDF values from the dataset
-    #     if hasattr(self.dnn_dataset, 'pdf_norm') and self.dnn_dataset.pdf_norm is not None:
-    #         actual_pdf = self.dnn_dataset.pdf_norm[:mean_pdf.shape[0]]
-    #     else:
-    #         # If normalized PDF is not available, compute it from the mixture model
-    #         actual_pdf = torch.exp(self.base_dataset.mix.log_prob(x))
-    #         # Normalize the PDF values
-    #         actual_pdf = actual_pdf / torch.sum(actual_pdf) * actual_pdf.shape[0]
-            
-    #     # Add small epsilon to prevent log(0)
-    #     epsilon = 1e-10
-    #     mean_pdf = mean_pdf + epsilon
-    #     actual_pdf = actual_pdf + epsilon
-        
-    #     # Compute KL divergence: KL(P||Q) = E_P[log(P/Q)]
-    #     log_mean_pdf = torch.log(mean_pdf)
-    #     log_actual_pdf = torch.log(actual_pdf)
-    #     kl_div = torch.mean(log_mean_pdf - log_actual_pdf)
-        
-    #     return kl_div
 
 
     def model_mse_result(self, x):

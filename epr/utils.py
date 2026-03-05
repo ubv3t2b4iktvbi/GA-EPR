@@ -58,6 +58,13 @@ class ModelArgs:
     viz_interval: int = 10
     save_interval: int = 50
     prefix: str = "./2008/"
+
+    # Energy distance test
+    energy_test_mode: Literal["fixed_x", "two_sample", "similarity"] = "similarity"
+    energy_test_alpha: float = 0.05
+    energy_test_gamma: float = 0.1
+    energy_test_delta_c: float = 0.1
+    energy_test_run_diff: bool = True
     
     # Device configuration
     use_gpu: bool = True
@@ -125,6 +132,12 @@ class Problem:
     # Adding support for separate y-axis range
     y_max: float = 500
     y_min: float = 0
+
+    # Optional sampling bounds (for mix.sample filtering)
+    samp_x_max: float = None
+    samp_x_min: float = None
+    samp_y_max: float = None
+    samp_y_min: float = None
     
     # Sample sizes for different components
     dnn_sample_size: int = 100000
@@ -138,6 +151,14 @@ class Problem:
             self.y_max = self.x_max
         if self.y_min is None:
             self.y_min = self.x_min
+        if self.samp_x_max is None:
+            self.samp_x_max = self.x_max
+        if self.samp_x_min is None:
+            self.samp_x_min = self.x_min
+        if self.samp_y_max is None:
+            self.samp_y_max = self.y_max
+        if self.samp_y_min is None:
+            self.samp_y_min = self.y_min
             
         # Validate that min values are less than max values
         if self.x_min >= self.x_max:
@@ -155,6 +176,14 @@ class Problem:
             config['y_min'] = None
         if 'y_max' not in config:
             config['y_max'] = None
+        if 'samp_x_min' not in config:
+            config['samp_x_min'] = None
+        if 'samp_x_max' not in config:
+            config['samp_x_max'] = None
+        if 'samp_y_min' not in config:
+            config['samp_y_min'] = None
+        if 'samp_y_max' not in config:
+            config['samp_y_max'] = None
         return cls(**config)
     
     def save_to_yaml(self, yaml_path):
