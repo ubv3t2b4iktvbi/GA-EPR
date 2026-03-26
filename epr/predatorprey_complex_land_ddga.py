@@ -1,0 +1,281 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.integrate import solve_ivp
+from scipy.linalg import qr, solve_continuous_lyapunov
+
+
+# =========================
+# Parameter Setting
+# =========================
+
+# Dynamical parameters
+dim = 2                      # System dimension
+D = 0.1                      # Noise strength
+
+# =========================
+# Parameters of new model
+# =========================
+rP = 1.2                     # prey/algae max growth rate
+KP = 5.0                     # half-saturation constant in F_P
+rB = 1.0                     # predator grazing scale
+KB = 2.0                     # half-saturation constant in F_B
+kappa = 2.0                  # Hill exponent
+epsi = 1.0                   # epsilon in prey loss term
+alpha_ = 0.6                 # conversion efficiency in predator equation
+m_ = 0.2                     # predator mortality
+delta_ = 0.1                 # dilution / washout
+N = 30.0                     # constant nutrient
+
+# Initial condition
+x_init = np.array([1.0, 1.0], dtype=float)
+
+# Simulation parameters
+dt = 0.01
+steps = int(2 * 1e4)
+time = dt * np.arange(1, steps + 1)   # MATLAB: dt * (1:steps).'
+
+
+# =========================
+# Define dynamics
+# =========================
+FP_const = rP * N / (KP + N)   # F_P(N), since N is fixed
+
+
+def FB(P):
+    return rB * P**kappa / (KB**kappa + P**kappa)
+
+
+def dFB(P):
+    return rB * kappa * KB**kappa * P**(kappa - 1) / (KB**kappa + P**kappa)**2
+
+
+def drift_f(t, x):
+    P, A = x
+    return np.array([
+        FP_const * P - FB(P) * A / epsi - delta_ * P,
+        alpha_ * FB(P) * A - (m_ + delta_) * A
+    ], dtype=float)
+
+
+def jacobian_f(x):
+    P, A = x
+    return np.array([
+        [FP_const - delta_ - (A / epsi) * dFB(P),   -FB(P) / epsi],
+        [alpha_ * A * dFB(P),                       alpha_ * FB(P) - (m_ + delta_)]
+    ], dtype=float)
+
+
+# =========================
+# Helper function
+# =========================
+def gaussian_land_dim2(V, Sigma, cycle, phi, range_1, range_2, num):
+    """
+    V: n*2 projection matrix
+    Sigma: n*n*(time steps) covariance matrices
+    cycle: (time steps)*n limit cycle
+    phi: (time steps,) pre-solution
+    range_1, range_2: plotting ranges
+    num: resolution
+    """
+    def gauss(A, x, y):
+        return A[0, 0] * x**2 + A[1, 1] * y**2 + 2 * A[0, 1] * x * y
+
+    T = len(phi)
+    sigma0_proj = np.zeros((2, 2, T))
+    mu_proj = np.zeros((T, 2))
+
+    for i in range(T):
+        mu_proj[i, :] = V.T @ cycle[i, :]
+        sigma0_proj[:, :, i] = V.T @ Sigma[:, :, i] @ V
+
+    x_vals = np.linspace(range_1[0], range_1[1], num)
+    y_vals = np.linspace(range_2[0], range_2[1], num)
+    mesh_1, mesh_2 = np.meshgrid(x_vals, y_vals)
+
+    P_DDGA = np.zeros((num, num))
+
+    for k in range(T):
+        sig = sigma0_proj[:, :, k]
+        sig = 0.5 * (sig + sig.T) + 1e-10 * np.eye(2)   # numerical regularization
+        inv_cov = np.linalg.inv(sig)
+
+        cons1 = 1.0 / np.sqrt((2 * np.pi)**2 * np.linalg.det(sig))
+        cons2 = np.exp(-0.5)
+
+        Z = cons1 * cons2 ** gauss(inv_cov, mesh_1 - mu_proj[k, 0], mesh_2 - mu_proj[k, 1])
+        P_DDGA += Z * phi[k]
+
+    # P_DDGA = -np.log(P_DDGA)  # probability --> landscape
+    return P_DDGA, mesh_1, mesh_2
+
+
+# =========================
+# Find the limit cycle
+# =========================
+
+# MATLAB ode45 -> Python solve_ivp, sampling on the same time grid
+sol = solve_ivp(
+    drift_f,
+    t_span=(time[0], time[-1]),
+    y0=x_init,
+    t_eval=time,
+    method="RK45",
+    rtol=1e-6,
+    atol=1e-9
+)
+
+path = sol.y.T   # shape: (steps, dim)
+
+Force_origin = np.zeros((steps, dim))
+for i in range(steps):
+    Force_origin[i, :] = drift_f(0.0, path[i, :])
+
+# Distance from the end point
+cen_path = path - path[-1, :]
+dis_path = np.linalg.norm(cen_path, axis=1)
+
+# Take the threshold from the drift force
+thres_force = np.max(np.linalg.norm(Force_origin, axis=1))
+
+# Find points near the end point to calculate the period
+start_idx = int(np.floor(0.3 * steps))
+near_points = np.where(dis_path[start_idx:] < 3 * thres_force * dt)[0]
+period_time = np.zeros(len(near_points) - 1) if len(near_points) >= 2 else np.array([])
+
+# Remove the local error
+for i in range(len(near_points) - 1):
+    if near_points[i + 1] - near_points[i] != 1:
+        period_time[i] = near_points[i]
+
+# Find the period
+period_time = period_time[period_time != 0]
+if len(period_time) < 2:
+    raise RuntimeError("无法可靠检测周期。请增加仿真时间、调整初值，或修改周期检测阈值。")
+
+Period = np.mean(np.diff(period_time)) * dt
+
+# From the end point evolving a whole period is the limit cycle
+t_cycle = np.arange(0.0, Period + dt, dt)
+sol_cycle = solve_ivp(
+    drift_f,
+    t_span=(t_cycle[0], t_cycle[-1]),
+    y0=path[-1, :],
+    t_eval=t_cycle,
+    method="RK45",
+    rtol=1e-6,
+    atol=1e-9
+)
+
+Limit_cycle = sol_cycle.y.T
+len_LC = len(Limit_cycle)
+
+Force_LC = np.zeros((len_LC, dim))
+Jacobian_LC = np.zeros((len_LC, dim, dim))
+
+for i in range(len_LC):
+    Force_LC[i, :] = drift_f(0.0, Limit_cycle[i, :])
+    Jacobian_LC[i, :, :] = jacobian_f(Limit_cycle[i, :])
+
+
+# =========================
+# Pre-solution
+# =========================
+gs = np.linalg.norm(Force_LC, axis=1)
+int_gs2 = np.cumsum(gs * gs / len_LC * (len_LC * dt))
+int_exp = np.exp(-int_gs2 / D)
+int_whole = np.cumsum(gs * int_exp / D / len_LC * (len_LC * dt))
+
+C0 = (1.0 - int_exp[-1]) / int_whole[-1]
+pre_solution = (1.0 / int_exp) * (1.0 - C0 * int_whole)
+pre_solution = pre_solution / np.sum(pre_solution)
+
+plt.figure()
+plt.plot(t_cycle, pre_solution, linewidth=2.5)
+plt.xlim([0, Period])
+plt.xlabel("t")
+plt.ylabel(r"$\phi(t)$")
+plt.legend(["Pre-Solution"], loc="upper right")
+plt.grid(True)
+plt.show()
+
+
+# =========================
+# Covariance
+# =========================
+Sigma_all = np.zeros((dim, dim, len_LC))
+
+# Find a continuous changing orthonormal basis of normal plane
+Q_last_step = np.zeros((dim, dim))
+
+for i in range(len_LC):
+    force_norm = np.linalg.norm(Force_LC[i, :], 2)
+    if force_norm < 1e-12:
+        raise RuntimeError(f"第 {i} 个极限环点的切向量范数过小，无法构造正交基。")
+
+    tan_vec = Force_LC[i, :].reshape(-1, 1) / force_norm
+    Q = np.hstack([tan_vec, np.eye(dim)[:, 1:]])
+    Q_this_step, _ = qr(Q, mode='economic')
+
+    # Keep continuity
+    if i > 0:
+        for j in range(1, dim):
+            direction = np.sign(np.dot(Q_this_step[:, j], Q_last_step[:, j]))
+            if direction == 0:
+                direction = 1.0
+            Q_this_step[:, j] *= direction
+
+    Q_last_step = Q_this_step.copy()
+
+    # Lyapunov equation on the normal plane
+    normal_basis = Q_this_step[:, 1:]                     # shape (dim, dim-1)
+    Jac_normal = normal_basis.T @ Jacobian_LC[i, :, :] @ normal_basis
+
+    # MATLAB lyap(A, Q) solves A X + X A^T + Q = 0
+    # scipy.solve_continuous_lyapunov(A, Q) solves A X + X A^T = -Q
+    Sigma_normal = solve_continuous_lyapunov(Jac_normal, 2 * D * np.eye(dim - 1))
+
+    Sigma_all[:, :, i] = (
+        normal_basis @ Sigma_normal @ normal_basis.T
+        + D * np.outer(Force_LC[i, :], Force_LC[i, :])
+    )
+
+
+# =========================
+# Landscape from DDGA
+# =========================
+
+# Automatic plotting range
+r1 = np.max(Limit_cycle[:, 0]) - np.min(Limit_cycle[:, 0])
+r2 = np.max(Limit_cycle[:, 1]) - np.min(Limit_cycle[:, 1])
+r1 = max(r1, 1e-2)
+r2 = max(r2, 1e-2)
+
+range_1 = [
+    max(0.0, np.min(Limit_cycle[:, 0]) - 0.3 * r1),
+    np.max(Limit_cycle[:, 0]) + 0.3 * r1
+]
+range_2 = [
+    max(0.0, np.min(Limit_cycle[:, 1]) - 0.3 * r2),
+    np.max(Limit_cycle[:, 1]) + 0.3 * r2
+]
+
+P_DDGA, mesh_1, mesh_2 = gaussian_land_dim2(
+    np.eye(2),
+    Sigma_all,
+    Limit_cycle,
+    pre_solution,
+    range_1,
+    range_2,
+    300
+)
+
+fig = plt.figure()
+ax = fig.add_subplot(111, projection='3d')
+ax.plot_surface(mesh_1, mesh_2, P_DDGA, antialiased=True)
+ax.set_xlim(range_1)
+ax.set_ylim(range_2)
+ax.view_init(elev=39, azim=-33)
+ax.set_xlabel("P")
+ax.set_ylabel("A")
+ax.set_zlabel("Probability / Density")
+plt.show()
