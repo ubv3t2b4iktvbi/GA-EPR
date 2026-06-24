@@ -65,7 +65,12 @@ def main(config_path=None):
     network = NetworkWrapper(args, problem)
     
     # Create force function using factory method with configured parameters
-    force_params = args.force_params.get(args.force_type, {}) if isinstance(args.force_params, dict) else {}
+    #force_params = args.force_params.get(args.force_type, {}) if isinstance(args.force_params, dict) else {}
+    if isinstance(args.force_params, dict):
+        nested_params = args.force_params.get(args.force_type)
+        force_params = nested_params if isinstance(nested_params, dict) else args.force_params
+    else:
+        force_params = {}
     # 使用dynamics模块中的get_force_函数
     from dynamics import get_force_
     force_fn = get_force_(args.force_type, **force_params)

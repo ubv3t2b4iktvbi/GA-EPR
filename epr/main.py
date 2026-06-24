@@ -45,6 +45,9 @@ def main(config_path=None):
         elif config_path and 'ToggleBasic' in config_path:
             args.force_type = 'ToggleBasic'
             args.force_params = {'growth_rate': 1.0}
+        elif config_path and 'predatorprey' in config_path.lower():
+            args.force_type = 'predatorprey'
+            args.force_params = {'growth_rate': 1.0}
         else:
             args.force_type = 'bistable'  # 默认值
             args.force_params = {'a': 1.0}
@@ -69,7 +72,14 @@ def main(config_path=None):
     network = NetworkWrapper(args, problem)
     
     # Create force function using factory method with configured parameters
-    force_params = args.force_params.get(args.force_type, {}) if isinstance(args.force_params, dict) else {}
+    # force_params = args.force_params.get(args.force_type, {}) if isinstance(args.force_params, dict) else {}
+    # force_fn = get_force_(args.force_type, **force_params)
+
+    if isinstance(args.force_params, dict):
+        nested_params = args.force_params.get(args.force_type)
+        force_params = nested_params if isinstance(nested_params, dict) else args.force_params
+    else:
+        force_params = {}
     force_fn = get_force_(args.force_type, **force_params)
 
     # Initialize energy landscape trainer
@@ -98,7 +108,7 @@ if __name__ == "__main__":
     import os
     
     print("🚀 Starting Ga-EPR simulation...")
-    default_config_dir = os.path.join("results", "ToggleBasic")
+    default_config_dir = os.path.join("results", "predatorprey")
     
     if len(sys.argv) > 1:
         input_path = sys.argv[1]

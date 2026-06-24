@@ -316,6 +316,28 @@ class ToggleBasic(Force):
         return dy.squeeze(0) if dy.shape[0] == 1 else dy
 
 
+class PredatorPrey(Force):
+    def __init__(self, growth_rate):
+        # Match the Lotka-Volterra system used in predatorprey_easy_land_ddga.py:
+        #   dN/dt = (r_n - C1 * P) * N
+        #   dP/dt = (-r_p + C2 * N) * P
+        self.growth_rate = float(growth_rate)
+        self.r_n = self.growth_rate
+        self.r_p = 0.75
+        self.C1 = 1.0
+        self.C2 = 1.0
+
+    def force(self, state):
+        N = state[..., 0]
+        P = state[..., 1]
+
+        dN = (self.r_n - self.C1 * P) * N
+        dP = (-self.r_p + self.C2 * N) * P
+
+        return torch.stack([dN, dP], dim=-1)
+
+
+
 def get_force_(force_type, **kwargs):
     """Factory method to get force  by type"""
     force_ = {
@@ -324,14 +346,10 @@ def get_force_(force_type, **kwargs):
         'Biochemical': Biochemical_oscillation,
         'transcription_factor': TranscriptionFactorForce,
         'bistable_52d': Bistable52DForce,
-        'ToggleBasic': ToggleBasic
+        'ToggleBasic': ToggleBasic,
+        'predatorprey': PredatorPrey
     }
     
     if force_type not in force_:
         raise ValueError(f"Unknown force  type: {force_type}")
-    
-    # # 修改为显式处理 ToggleBasic 的 growth_rate 参数
-    # if force_type == 'ToggleBasic' and 'growth_rate' in kwargs:
-    #     return force_[force_type](growth_rate=kwargs['growth_rate'])
-    # else:
     return force_[force_type](**kwargs)

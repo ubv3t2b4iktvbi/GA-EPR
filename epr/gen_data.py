@@ -141,6 +141,9 @@ class SharedBaseDataset:
             x = self._normalize_points(x, ref_pts=ref_pts)
         if mix is None:
             mix = self._mix
+        if mix is None:
+            weights, means, covs = self.gmm_components
+            mix = MixtureSameFamily(Categorical(weights), MultivariateNormal(means, covs))
         with torch.no_grad():
             y_ref = self._sample_mix_bounded(mix, ref_sample_size, y_offset=0.0)
         if normalize:
@@ -181,6 +184,9 @@ class SharedBaseDataset:
             x = self._normalize_points(x, ref_pts=ref_pts)
         if mix is None:
             mix = self._mix
+        if mix is None:
+            weights, means, covs = self.gmm_components
+            mix = MixtureSameFamily(Categorical(weights), MultivariateNormal(means, covs))
         with torch.no_grad():
             y_ref = self._sample_mix_bounded(mix, ref_sample_size, y_offset=0.0)
         if normalize:
@@ -229,6 +235,9 @@ class SharedBaseDataset:
             x = self._normalize_points(x, ref_pts=ref_pts)
         if mix is None:
             mix = self._mix
+        if mix is None:
+            weights, means, covs = self.gmm_components
+            mix = MixtureSameFamily(Categorical(weights), MultivariateNormal(means, covs))
         
         with torch.no_grad():
             y = self._sample_mix_bounded(mix, ref_sample_size)
@@ -249,6 +258,37 @@ class SharedBaseDataset:
         p_val = (np.sum(null_stats >= t_obs) + 1.0) / (num_bootstrap + 1.0)
         return t_obs, p_val
 
+    def _logprob_bad_rate_test(self, real_points, ref_sample_size=500, mix=None,
+                               bad_quantile=0.1, extra_delta=0.1):
+        """
+        Bad-point rate check using wsga log-probability.
+        c_q is the q-quantile of log p0(Y_ref), Y_ref sampled from P0.
+        R(X) is the fraction of points with log p0(x_i) < c_q.
+        """
+        x = np.asarray(real_points, dtype=np.float64)
+        if mix is None:
+            mix = self._mix
+        if mix is None:
+            weights, means, covs = self.gmm_components
+            mix = MixtureSameFamily(Categorical(weights), MultivariateNormal(means, covs))
+
+        with torch.no_grad():
+            y_ref = self._sample_mix_bounded(mix, ref_sample_size, y_offset=0.0)
+
+        x_t = torch.tensor(x, dtype=torch.float32, device=self.device)
+        y_t = torch.tensor(y_ref, dtype=torch.float32, device=self.device)
+        with torch.no_grad():
+            logp_ref = mix.log_prob(y_t).detach().cpu().numpy()
+            logp_x = mix.log_prob(x_t).detach().cpu().numpy()
+
+        c_q = float(np.quantile(logp_ref, bad_quantile))
+        #r0 = float(np.mean(logp_ref < c_q))
+        r0 = bad_quantile
+        r = float(np.mean(logp_x < c_q))
+        threshold = r0 + float(extra_delta)
+        compatible = r <= threshold
+        return r, c_q, r0, threshold, compatible
+
     def print_wsga_energy_distance_test(self, real_points=None, ref_sample_size=200, num_bootstrap=200, force_run=False):
         """
         Print energy distance test result during main.py execution.
@@ -262,12 +302,20 @@ class SharedBaseDataset:
         alpha = getattr(self.args, "energy_test_alpha", 0.05)
         gamma = getattr(self.args, "energy_test_gamma", 0.1)
         delta_c = getattr(self.args, "energy_test_delta_c", 0.1)
+        run_bad_rate = getattr(self.args, "energy_test_run_bad_rate", True)
+        bad_q = getattr(self.args, "energy_test_bad_quantile", 0.1)
+        bad_delta = getattr(self.args, "energy_test_bad_delta", 0.1)
         normalize = True
+        mix = self._mix
+        if mix is None:
+            weights, means, covs = self.gmm_components
+            mix = MixtureSameFamily(Categorical(weights), MultivariateNormal(means, covs))
         if test_mode == "similarity":
             t_obs, upper_ci, A, delta, reject_h0 = self._energy_distance_similarity_test(
                 real_points,
                 ref_sample_size=ref_sample_size,
                 num_bootstrap=num_bootstrap,
+                mix=mix,
                 alpha=alpha,
                 gamma=gamma,
                 delta_c=delta_c,
@@ -281,6 +329,7 @@ class SharedBaseDataset:
                 real_points,
                 ref_sample_size=ref_sample_size,
                 num_bootstrap=num_bootstrap,
+                mix=mix,
                 test_mode=test_mode,
                 normalize=normalize,
             )
@@ -292,10 +341,22 @@ class SharedBaseDataset:
                 real_points,
                 ref_sample_size=ref_sample_size,
                 num_bootstrap=num_bootstrap,
+                mix=mix,
                 normalize=normalize,
             )
             print(f"[EnergyDistance][diff] T_obs={t_obs_d:.4f}, right-tailed p={p_val_d:.4f} "
                   f"(H0: real_points ~ wsga mix)")
+        if run_bad_rate:
+            r, c_q, r0, threshold, compatible = self._logprob_bad_rate_test(
+                real_points,
+                ref_sample_size=ref_sample_size,
+                mix=mix,
+                bad_quantile=bad_q,
+                extra_delta=bad_delta,
+            )
+            verdict = "COMPATIBLE" if compatible else "TOO MANY BAD POINTS"
+            print(f"[LogProbBadRate] R={r:.4f}, cq={c_q:.4f}, r0={r0:.4f}, "
+                  f"delta={bad_delta:.4f}, threshold={threshold:.4f} => {verdict}")
         self._ed_test_done = True
 
     def get_simulated_data(self, required_size, noise_strength):
@@ -503,20 +564,44 @@ class SharedBaseDataset:
                 ax.set_ylim(target_y_min + 0, target_y_max + 0)  # 同时更新y轴范围
 
                 real_points= [
+                            (103.6, 11.9),
+                            (103.6, 11.9),
                             (137.8, 18),
                             (219.5, 24.2),
                             (246.5, 30.1),
                             (297, 38),
                             (321.4, 48.4),
                             (298, 62.5),
+                            (165.7, 99.4),
+                            (152, 108.8),
+                            (119.9, 142.7),
+                            (101.6, 156.3),
+                            (44.4, 239.8),
+                            (35.9, 399.9),
                             (138.4, 10.8),
                             (184.5, 17.7),
                             (273.9, 22.4),
                             (337.7, 28.8),
+                            (453.3, 35),
+                            (502.4, 45.4),
+                            (526.4, 58.4),
+                            (436.4, 86.4),
+                            (459.6, 99.2),
+                            (385.5, 102.6),
+                            (441, 107.1),
+                            (429.1, 111.4),
+                            (431.6, 119),
+                            (305.5, 92.5),
+                            (342.8, 89.3),
+                            (305.4, 92.7),
                             (224.4, 67.4),
                             (208.9, 53.3),
                             (221.3, 47.6),
                             (274.3, 24.9),
+                            (11.1, 317.8),
+                            (199.5, 15.45),
+                            (274.3, 24.9),
+                            (567.3, 37.2)
                         ]
                 # Energy distance test: delegate to unified printer (respects test_mode)
                 if not self._ed_test_done:
